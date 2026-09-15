@@ -1,17 +1,15 @@
 import logging
 import os
-from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 LOG_DIR = "logs"
-LOG_FILE = f"{datetime.now().strftime('%m_%d_%Y_%H_%M_%S')}.log"
+LOG_FILE = "videomind.log"
 
-MAX_LOG_SIZE = 5 * 1024 * 1024
-BACKUP_COUNT = 3
+MAX_LOG_SIZE = 5 * 1024 * 1024 
+BACKUP_COUNT = 3             
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(os.path.dirname(current_dir))
-
 
 log_dir_path = os.path.join(project_root, LOG_DIR)
 os.makedirs(log_dir_path, exist_ok=True)
@@ -32,7 +30,6 @@ def configure_logger():
     file_handler = RotatingFileHandler(
         log_file_path, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
     )
-
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 

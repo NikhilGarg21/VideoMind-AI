@@ -2,6 +2,8 @@
 venv/
 env/
 .venv/
+venv311/
+.venv311/
 
 # Python
 __pycache__/
@@ -13,7 +15,7 @@ logs/
 *.log
 
 # Artifacts
-artifacts/
+artifact/
 
 # DVC cache
 .dvc/cache/

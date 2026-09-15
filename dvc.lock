@@ -1,0 +1,128 @@
+schema: '2.0'
+stages:
+  audio_ingestion:
+    cmd: python -m scripts.run_audio_ingestion
+    deps:
+    - path: scripts/run_audio_ingestion.py
+      hash: md5
+      md5: 4341d0838aeee53a7b7f1a457edb50c6
+      size: 992
+    - path: src/components/audio_ingestion.py
+      hash: md5
+      md5: 3db97e70bf09529e3c3faa279a0ae070
+      size: 6184
+    - path: src/constants/__init__.py
+      hash: md5
+      md5: 5376c14e602522ea7cc9ddd779ac1443
+      size: 859
+    - path: src/entity/artifact_entity.py
+      hash: md5
+      md5: 6819dc65544628c22ebae904811d87e2
+      size: 426
+    - path: src/entity/config_entity.py
+      hash: md5
+      md5: 6ab663bde0ea9a40d4fb498cbedfd191
+      size: 1758
+    outs:
+    - path: artifact/audio_ingestion
+      hash: md5
+      md5: 19c6e23237ee0a6152cbe29be6e3fa73.dir
+      size: 44178860
+      nfiles: 21
+  audio_transcription:
+    cmd: python -m scripts.run_audio_transcription
+    deps:
+    - path: artifact/audio_ingestion
+      hash: md5
+      md5: 19c6e23237ee0a6152cbe29be6e3fa73.dir
+      size: 44178860
+      nfiles: 21
+    - path: scripts/run_audio_transcription.py
+      hash: md5
+      md5: afbde5b675ed607a01ab79e43eb68618
+      size: 1134
+    - path: src/components/audio_transcription.py
+      hash: md5
+      md5: a3f167b27f7d01875dbd54d2f535f031
+      size: 7004
+    - path: src/entity/artifact_entity.py
+      hash: md5
+      md5: 6819dc65544628c22ebae904811d87e2
+      size: 426
+    - path: src/entity/config_entity.py
+      hash: md5
+      md5: 6ab663bde0ea9a40d4fb498cbedfd191
+      size: 1758
+    - path: src/utils/dvc_utils.py
+      hash: md5
+      md5: 5f9a4905ca2f33daf7d2f5308f80e833
+      size: 367
+    outs:
+    - path: artifact/audio_transcription
+      hash: md5
+      md5: b4a421659acab0d0403ccf5dcd6005f2.dir
+      size: 53551
+      nfiles: 1
+  text_processing:
+    cmd: python -m scripts.run_text_processing
+    deps:
+    - path: artifact/audio_transcription
+      hash: md5
+      md5: b4a421659acab0d0403ccf5dcd6005f2.dir
+      size: 53551
+      nfiles: 1
+    - path: scripts/run_text_processing.py
+      hash: md5
+      md5: f5352f5b533db693dba2bcd3dbb97f6f
+      size: 1236
+    - path: src/components/text_processing.py
+      hash: md5
+      md5: c83205bbd7bd652e5e91682f2737010f
+      size: 6986
+    - path: src/entity/artifact_entity.py
+      hash: md5
+      md5: 6819dc65544628c22ebae904811d87e2
+      size: 426
+    - path: src/entity/config_entity.py
+      hash: md5
+      md5: 6ab663bde0ea9a40d4fb498cbedfd191
+      size: 1758
+    - path: src/utils/dvc_utils.py
+      hash: md5
+      md5: 5f9a4905ca2f33daf7d2f5308f80e833
+      size: 367
+    outs:
+    - path: artifact/text_processing
+      hash: md5
+      md5: b216f93fda10956be68ec10f24f76c23.dir
+      size: 20998
+      nfiles: 6
+  timestamp:
+    cmd: python -m scripts.run_timestamps
+    deps:
+    - path: scripts/run_timestamps.py
+      hash: md5
+      md5: 4a932dcc29fc5d83c55ffcb8055d3198
+      size: 1149
+    - path: src/components/timestamps.py
+      hash: md5
+      md5: f39d1c2c6db0ebbfe7837651a2653bad
+      size: 17821
+    - path: src/constants/__init__.py
+      hash: md5
+      md5: 5376c14e602522ea7cc9ddd779ac1443
+      size: 859
+    - path: src/entity/artifact_entity.py
+      hash: md5
+      md5: 6819dc65544628c22ebae904811d87e2
+      size: 426
+    - path: src/entity/config_entity.py
+      hash: md5
+      md5: 6ab663bde0ea9a40d4fb498cbedfd191
+      size: 1758
+    outs:
+    - path: artifact/timestamp
+      hash: md5
+      md5: b75680ceee986ef24e8bccd58d486c7d.dir
+      size: 2970
+      nfiles: 1

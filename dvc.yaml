@@ -1,0 +1,49 @@
+stages:
+  audio_ingestion:
+    cmd: python -m scripts.run_audio_ingestion
+    deps:
+      - scripts/run_audio_ingestion.py
+      - src/components/audio_ingestion.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/constants/__init__.py
+
+    outs:
+      - artifact/audio_ingestion
+
+
+  audio_transcription:
+    cmd: python -m scripts.run_audio_transcription
+    deps:
+      - scripts/run_audio_transcription.py
+      - src/components/audio_transcription.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/utils/dvc_utils.py
+      - artifact/audio_ingestion
+    outs:
+      - artifact/audio_transcription
+
+
+  text_processing:
+    cmd: python -m scripts.run_text_processing
+    deps:
+      - scripts/run_text_processing.py
+      - src/components/text_processing.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/utils/dvc_utils.py
+      - artifact/audio_transcription
+    outs:
+      - artifact/text_processing
+  
+  timestamp:
+    cmd: python -m scripts.run_timestamps
+    deps:
+      - scripts/run_timestamps.py
+      - src/components/timestamps.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/constants/__init__.py
+    outs:
+      - artifact/timestamp

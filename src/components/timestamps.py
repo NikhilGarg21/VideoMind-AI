@@ -282,7 +282,6 @@ Transcript:
             transcript = self.load_transcript()
 
             segments = transcript["segments"]
-
             prepared_transcript = self.prepare_transcript(
                 segments
             )

@@ -1,7 +1,7 @@
 import sys
 import os
 
-from src.utils.dvc_utils import (
+from src.utils.main_utils import (
     load_artifact_json,
     save_artifact_json,
 )

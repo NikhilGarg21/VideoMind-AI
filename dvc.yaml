@@ -19,7 +19,7 @@ stages:
       - src/components/audio_transcription.py
       - src/entity/config_entity.py
       - src/entity/artifact_entity.py
-      - src/utils/dvc_utils.py
+      - src/utils/main_utils.py
       - artifact/audio_ingestion
     outs:
       - artifact/audio_transcription
@@ -32,7 +32,7 @@ stages:
       - src/components/text_processing.py
       - src/entity/config_entity.py
       - src/entity/artifact_entity.py
-      - src/utils/dvc_utils.py
+      - src/utils/main_utils.py
       - artifact/audio_transcription
     outs:
       - artifact/text_processing

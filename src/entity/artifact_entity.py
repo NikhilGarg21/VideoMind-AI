@@ -8,6 +8,7 @@ class AudioIngestionArtifact:
     audio_file_path: str
     audio_chunks_dir: str
     video_metadata_file_path: str
+    chunk_durations: int
 
 @dataclass
 class AudioTranscriptionArtifact:

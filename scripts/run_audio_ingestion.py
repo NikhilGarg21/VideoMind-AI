@@ -3,8 +3,7 @@ from src.pipeline.video_pipeline import VideoPipeline
 from src.constants import VIDEO_URL
 from src.exception import MyException
 from src.logger import logger
-from src.utils.dvc_utils import save_artifact_json
-
+from src.utils.main_utils import save_artifact_json
 
 def main():
     try:
@@ -16,7 +15,8 @@ def main():
             {
                 "audio_file_path": artifact.audio_file_path,
                 "audio_chunks_dir": artifact.audio_chunks_dir,
-                "video_metadata_file_path": artifact.video_metadata_file_path
+                "video_metadata_file_path": artifact.video_metadata_file_path,
+                "chunk_durations": artifact.chunk_durations
             },
         )
 

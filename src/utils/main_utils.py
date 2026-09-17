@@ -1,8 +1,17 @@
 import os
 import sys
 import json
-
 from src.exception import MyException
+
+def save_artifact_json(name: str, data: dict) -> None:
+    os.makedirs("artifact/dvc_meta", exist_ok=True)
+    with open(f"artifact/dvc_meta/{name}.json", "w") as f:
+        json.dump(data, f, indent=4)
+
+
+def load_artifact_json(name: str) -> dict:
+    with open(f"artifact/dvc_meta/{name}.json") as f:
+        return json.load(f)
 
 
 def save_json(
@@ -55,3 +64,11 @@ def load_json(
 
     except Exception as e:
         raise MyException(e, sys)
+
+
+def format_timestamp(seconds: float) -> str:
+    """Convert seconds to MM:SS format."""
+    minutes = int(seconds // 60)
+    seconds = int(seconds % 60)
+
+    return f"{minutes:02d}:{seconds:02d}"

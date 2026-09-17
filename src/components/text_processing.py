@@ -1,6 +1,5 @@
 import os
 import sys
-import json
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
@@ -11,6 +10,10 @@ from src.entity.artifact_entity import (
 )
 from src.exception import MyException
 from src.logger import logger
+from src.utils.main_utils import (
+    load_json,
+    save_json,
+)
 
 
 class TextProcessing:
@@ -21,13 +24,33 @@ class TextProcessing:
         audio_transcription_artifact: AudioTranscriptionArtifact,
         text_processing_config: TextProcessingConfig,
     ):
-        self.audio_transcription_artifact = audio_transcription_artifact
+        """
+        Initialize TextProcessing with the transcription artifact and config.
 
-        self.text_processing_config = text_processing_config
+        Args:
+            audio_transcription_artifact: Output of the transcription stage,
+                pointing to the timestamped transcript JSON.
+            text_processing_config: Configuration for chunk size, overlap,
+                and the output directory for text chunks.
+        """
+        try:
+            self.audio_transcription_artifact = audio_transcription_artifact
+            self.text_processing_config = text_processing_config
+
+        except Exception as e:
+            raise MyException(e, sys)
 
     def load_transcript_data(self) -> dict:
-        """Load timestamped transcription data."""
+        """
+        Load and validate the timestamped transcript produced by transcription.
 
+        Returns:
+            The parsed transcript dict, guaranteed to contain a non-empty
+            `segments` list.
+
+        Raises:
+            MyException: If the file is missing, empty, or malformed.
+        """
         try:
             logger.info("Loading transcription data")
 
@@ -35,13 +58,7 @@ class TextProcessing:
                 self.audio_transcription_artifact.transcript_file_path
             )
 
-            with open(
-                transcript_file_path,
-                "r",
-                encoding="utf-8",
-            ) as file:
-
-                transcript_data = json.load(file)
+            transcript_data = load_json(transcript_file_path)
 
             if not transcript_data:
                 raise ValueError("Transcription data is empty")
@@ -59,17 +76,26 @@ class TextProcessing:
         except Exception as e:
             raise MyException(e, sys)
 
-    def create_text_chunks(
-        self,
-        segments: list,
-    ) -> list:
+    def create_text_chunks(self, segments: list) -> list:
         """
-        Create text chunks while preserving timestamps.
+        Merge transcript segments into larger text chunks while preserving
+        the start/end timestamps that bound each chunk.
 
-        Each chunk contains text along with the
-        start and end timestamps.
+        Uses a RecursiveCharacterTextSplitter to split accumulated text
+        once it reaches the configured chunk size, carrying over any
+        leftover text into the next chunk.
+
+        Args:
+            segments: List of transcript segment dicts (each with `start`,
+                `end`, and `text`).
+
+        Returns:
+            A list of chunk dicts, each with `chunk_id`, `start_time`,
+            `end_time`, `text`, `text_length`, and `word_count`.
+
+        Raises:
+            MyException: If no chunks are produced.
         """
-
         try:
             logger.info("Creating timestamp-preserved text chunks")
 
@@ -95,8 +121,10 @@ class TextProcessing:
             chunk_id = 1
 
             for segment in segments:
-
-                segment_text = segment.get("text", "").strip()
+                segment_text = segment.get(
+                    "text",
+                    "",
+                ).strip()
 
                 if not segment_text:
                     continue
@@ -115,11 +143,9 @@ class TextProcessing:
                 current_text += segment_text
 
                 if len(current_text) >= (self.text_processing_config.chunk_size):
-
                     split_chunks = text_splitter.split_text(current_text)
 
                     for split_chunk in split_chunks[:-1]:
-
                         chunks.append(
                             {
                                 "chunk_id": chunk_id,
@@ -134,23 +160,21 @@ class TextProcessing:
                         chunk_id += 1
 
                     if split_chunks:
-
                         current_text = split_chunks[-1]
 
                     current_start_time = segment_start
-
                     current_end_time = segment_end
 
             if current_text.strip():
-
+                final_text = current_text.strip()
                 chunks.append(
                     {
                         "chunk_id": chunk_id,
                         "start_time": current_start_time,
                         "end_time": current_end_time,
-                        "text": current_text.strip(),
-                        "text_length": len(current_text.strip()),
-                        "word_count": len(current_text.split()),
+                        "text": final_text,
+                        "text_length": len(final_text),
+                        "word_count": len(final_text.split()),
                     }
                 )
 
@@ -158,60 +182,55 @@ class TextProcessing:
                 raise ValueError("No text chunks were created")
 
             logger.info(f"Created {len(chunks)} text chunks")
-
             return chunks
 
         except Exception as e:
             raise MyException(e, sys)
 
-    def save_text_chunks(
-        self,
-        chunks: list,
-    ) -> str:
-        """Save timestamped text chunks."""
+    def save_text_chunks(self, chunks: list) -> str:
+        """
+        Persist each text chunk to its own JSON file on disk.
 
+        Args:
+            chunks: List of chunk dicts produced by `create_text_chunks`.
+
+        Returns:
+            Path to the directory containing the saved chunk files.
+
+        Raises:
+            MyException: If saving any chunk fails.
+        """
         try:
             logger.info("Saving text chunks")
-
-            os.makedirs(
-                self.text_processing_config.text_chunks_dir,
-                exist_ok=True,
-            )
+            text_chunks_dir = self.text_processing_config.text_chunks_dir
 
             for chunk in chunks:
-
                 chunk_id = chunk["chunk_id"]
-
                 chunk_file_path = os.path.join(
-                    self.text_processing_config.text_chunks_dir,
+                    text_chunks_dir,
                     f"chunk_{chunk_id:03d}.json",
                 )
 
-                with open(
-                    chunk_file_path,
-                    "w",
-                    encoding="utf-8",
-                ) as file:
-
-                    json.dump(
-                        chunk,
-                        file,
-                        ensure_ascii=False,
-                        indent=4,
-                    )
+                save_json(chunk, chunk_file_path)
 
             logger.info("Text chunks saved successfully")
-
-            return self.text_processing_config.text_chunks_dir
+            return text_chunks_dir
 
         except Exception as e:
             raise MyException(e, sys)
 
-    def initiate_text_processing(
-        self,
-    ) -> TextProcessingArtifact:
-        """Execute complete text processing."""
+    def initiate_text_processing(self) -> TextProcessingArtifact:
+        """
+        Execute the complete text processing stage: load the transcript,
+        chunk it, and save the chunks to disk.
 
+        Returns:
+            A TextProcessingArtifact pointing to the directory of saved
+            text chunk files.
+
+        Raises:
+            MyException: If any stage of processing fails.
+        """
         try:
             logger.info("Starting text processing")
 
@@ -220,13 +239,11 @@ class TextProcessing:
 
             text_chunks = self.create_text_chunks(segments=segments)
             text_chunks_dir = self.save_text_chunks(chunks=text_chunks)
-
             text_processing_artifact = TextProcessingArtifact(
                 text_chunks_dir=text_chunks_dir
             )
 
             logger.info("Text processing artifact created successfully")
-
             return text_processing_artifact
 
         except Exception as e:

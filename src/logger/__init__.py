@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 
 LOG_DIR = "logs"
@@ -28,12 +29,17 @@ def configure_logger():
     )
 
     file_handler = RotatingFileHandler(
-        log_file_path, maxBytes=MAX_LOG_SIZE, backupCount=BACKUP_COUNT
+        log_file_path,
+        maxBytes=MAX_LOG_SIZE,
+        backupCount=BACKUP_COUNT,
+        encoding="utf-8",
     )
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(formatter)
 
-    console_handler = logging.StreamHandler()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(formatter)
 

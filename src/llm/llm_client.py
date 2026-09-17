@@ -11,7 +11,6 @@ load_dotenv()
 
 
 class LLMClient:
-
     def __init__(self):
         try:
             logger.info("Initializing Groq LLM")

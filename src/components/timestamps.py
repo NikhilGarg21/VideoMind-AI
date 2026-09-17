@@ -1,17 +1,25 @@
-import json
 import os
 import sys
 
 from src.exception import MyException
 from src.logger import logger
+
 from src.entity.config_entity import TimestampConfig
 from src.entity.artifact_entity import (
     AudioTranscriptionArtifact,
     TimestampArtifact,
 )
 
+from src.prompts import Prompt
+from src.utils.main_utils import (
+    load_json,
+    save_json,
+    format_timestamp,
+)
+
 
 class TimestampGenerator:
+    """Generates semantic topic timestamps from a transcript using an LLM."""
 
     def __init__(
         self,
@@ -19,6 +27,18 @@ class TimestampGenerator:
         timestamp_config: TimestampConfig,
         llm,
     ):
+        """
+        Initialize TimestampGenerator with the transcript artifact, config,
+        and an LLM instance to use for topic segmentation.
+
+        Args:
+            audio_transcription_artifact: Output of the transcription stage,
+                pointing to the timestamped transcript JSON.
+            timestamp_config: Configuration for the output timestamp file
+                path and directory.
+            llm: A LangChain-compatible chat model supporting
+                `with_structured_output`.
+        """
         try:
             logger.info("Initializing TimestampGenerator")
 
@@ -32,70 +52,75 @@ class TimestampGenerator:
             raise MyException(e, sys) from e
 
     def load_transcript(self):
+        """
+        Load the timestamped transcript JSON from disk.
+
+        Returns:
+            The parsed transcript dict.
+
+        Raises:
+            MyException: If loading fails.
+        """
         try:
             logger.info("Loading transcript")
 
-            with open(
-                self.audio_transcription_artifact.transcript_file_path,
-                "r",
-                encoding="utf-8",
-            ) as file:
-                transcript = json.load(file)
+            transcript = load_json(
+                self.audio_transcription_artifact.transcript_file_path
+            )
 
             logger.info("Transcript loaded successfully")
+
             return transcript
 
         except Exception as e:
             raise MyException(e, sys) from e
 
     def prepare_transcript(self, segments):
+        """
+        Format transcript segments into a compact `id|text` string suitable
+        for inclusion in the LLM prompt.
+
+        Args:
+            segments: List of transcript segment dicts.
+
+        Returns:
+            A newline-separated string of `"{id}|{text}"` lines.
+
+        Raises:
+            MyException: If formatting fails.
+        """
         try:
             logger.info("Preparing transcript for LLM")
 
             transcript = "\n".join(
-                f"{segment['id']}|{segment['text']}" for segment in segments
+                f"{segment['id']}|{segment['text']}"
+                for segment in segments
             )
 
             logger.info("Transcript prepared successfully")
+
             return transcript
 
         except Exception as e:
             raise MyException(e, sys) from e
 
-    def create_prompt(self, transcript):
-        return f"""
-Analyze the complete video transcript and identify meaningful semantic chapters.
-
-First analyze the transcript as a whole, then identify major sections where
-the main subject, concept, process, question, task, or learning objective changes.
-
-Rules:
-- Prefer fewer strong chapters over many small ones.
-- Do not target a fixed chapter count or equal durations.
-- Group definitions, explanations, examples, applications, comparisons,
-  clarifications, pros/cons, and recaps that belong to the same concept.
-- Combine closely related subtopics, even when moving from concepts to examples,
-  applications, or project discussion.
-- Do not split chapters for minor examples, explanations, or presentation structure.
-- Do not use arbitrary time thresholds or context-chunk boundaries.
-- Combine short closing remarks, career reflections, calls to action, and goodbyes
-  with the preceding substantive section unless they introduce a substantial topic.
-- Chapters must be chronological and non-overlapping.
-- Use only segment IDs provided in the transcript.
-- Never invent segment IDs.
-- start_segment and end_segment must exactly match existing segment IDs.
-- Topic names must be concise, specific, and descriptive.
-
-Identify the semantic chapters and return them using the required structure.
-
-Transcript:
-{transcript}
-"""
-
     def generate_timestamps(self, transcript):
+        """
+        Call the LLM with a structured-output schema to identify semantic
+        topics and their bounding segment IDs within the transcript.
+
+        Args:
+            transcript: The formatted `id|text` transcript string.
+
+        Returns:
+            A list of topic dicts, each with `topic`, `start_segment`,
+            `end_segment`, and an assigned `topic_id`.
+
+        Raises:
+            MyException: If the LLM call or output parsing fails.
+        """
         try:
             logger.info("Generating semantic timestamps using LLM")
-
             structured_llm = self.llm.with_structured_output(
                 {
                     "title": "timestamp_topics",
@@ -128,28 +153,40 @@ Transcript:
                     "required": ["topics"],
                 }
             )
-
-            response = structured_llm.invoke(
-                self.create_prompt(transcript)
-            )
+            prompt = Prompt.timestamp_prompt.format(transcript=transcript)
+            response = structured_llm.invoke(prompt)
 
             topics = response["topics"]
-
             for i, topic in enumerate(topics, start=1):
                 topic["topic_id"] = i
 
             logger.info("Semantic timestamps generated successfully")
-
             return topics
 
         except Exception as e:
             raise MyException(e, sys) from e
 
     def validate_topics(self, topics, segments):
+        """
+        Validate that LLM-generated topics reference real, ordered,
+        non-overlapping segment ranges.
+
+        Args:
+            topics: List of topic dicts from `generate_timestamps`.
+            segments: The original transcript segments, used to check
+                that referenced segment IDs actually exist.
+
+        Raises:
+            MyException: If any topic references an invalid segment ID,
+                has a reversed range, or overlaps the previous topic.
+        """
         try:
             logger.info("Validating generated topics")
 
-            valid_segment_ids = {segment["id"] for segment in segments}
+            valid_segment_ids = {
+                segment["id"]
+                for segment in segments
+            }
 
             previous_end = -1
 
@@ -186,6 +223,22 @@ Transcript:
             raise MyException(e, sys) from e
 
     def convert_segments_to_timestamps(self, topics, segments):
+        """
+        Convert each topic's segment ID range into human-readable
+        start/end timestamps.
+
+        Args:
+            topics: Validated list of topic dicts.
+            segments: The original transcript segments, used to look up
+                the actual `start`/`end` seconds for each segment ID.
+
+        Returns:
+            A list of topic dicts with `topic_id`, `topic`, `start_time`,
+            and `end_time` (formatted as MM:SS or similar).
+
+        Raises:
+            MyException: If conversion fails.
+        """
         try:
             logger.info("Converting segment IDs to timestamps")
 
@@ -209,10 +262,10 @@ Transcript:
                     {
                         "topic_id": topic["topic_id"],
                         "topic": topic["topic"],
-                        "start_time": self.format_timestamp(
+                        "start_time": format_timestamp(
                             start_segment["start"]
                         ),
-                        "end_time": self.format_timestamp(
+                        "end_time": format_timestamp(
                             end_segment["end"]
                         ),
                     }
@@ -225,23 +278,65 @@ Transcript:
         except Exception as e:
             raise MyException(e, sys) from e
 
-    def close_gaps(self, topics):
+    def _to_seconds(self, timestamp: str) -> float:
+        """
+        Convert a `"MM:SS"`-formatted timestamp string into total seconds.
+
+        Args:
+            timestamp: A timestamp string in `MM:SS` format.
+
+        Returns:
+            The equivalent number of seconds as a float.
+        """
+        minutes, seconds = timestamp.split(":")
+        return int(minutes) * 60 + int(seconds)
+
+    def close_gaps(self, topics, max_gap_seconds=2.0):
+        """
+        Close small timing gaps between consecutive topics so their
+        boundaries line up, while leaving larger gaps untouched and
+        logging them for manual review.
+
+        Args:
+            topics: List of topic dicts with `start_time`/`end_time`.
+            max_gap_seconds: The largest gap (in seconds) that will be
+                auto-closed. Gaps larger than this are left as-is and
+                logged as a warning instead.
+
+        Returns:
+            The topics list, with small gaps closed in place.
+
+        Raises:
+            MyException: If gap calculation fails.
+        """
         try:
             for i in range(len(topics) - 1):
-                topics[i]["end_time"] = topics[i + 1]["start_time"]
+                gap = self._to_seconds(topics[i + 1]["start_time"]) - self._to_seconds(
+                    topics[i]["end_time"]
+                )
+                if 0 < gap <= max_gap_seconds:
+                    topics[i]["end_time"] = topics[i + 1]["start_time"]
+                elif gap > max_gap_seconds:
+                    logger.warning(
+                        f"Large gap ({gap:.1f}s) between topic {i + 1} "
+                        f"and {i + 2} — not auto-closed"
+                    )
 
             return topics
 
         except Exception as e:
-            raise MyException(e, sys) from e
-
-    def format_timestamp(self, seconds):
-        minutes = int(seconds // 60)
-        seconds = int(seconds % 60)
-
-        return f"{minutes:02d}:{seconds:02d}"
+            raise MyException(e, sys)
 
     def save_timestamps(self, topics):
+        """
+        Save the final list of topic timestamps to the configured output file.
+
+        Args:
+            topics: The finalized list of topic dicts.
+
+        Raises:
+            MyException: If saving fails.
+        """
         try:
             logger.info("Saving timestamp artifact")
 
@@ -255,17 +350,10 @@ Transcript:
                 "topics": topics,
             }
 
-            with open(
+            save_json(
+                output,
                 self.timestamp_config.timestamp_file_path,
-                "w",
-                encoding="utf-8",
-            ) as file:
-                json.dump(
-                    output,
-                    file,
-                    indent=4,
-                    ensure_ascii=False,
-                )
+            )
 
             logger.info(
                 f"Timestamp file saved at "
@@ -273,15 +361,27 @@ Transcript:
             )
 
         except Exception as e:
-            raise MyException(e, sys) from e
+            raise MyException(e, sys)
 
     def initiate_timestamp_generation(self) -> TimestampArtifact:
+        """
+        Execute the complete timestamp generation pipeline: load the
+        transcript, generate topics via LLM, validate them, convert to
+        timestamps, close small gaps, and save the result.
+
+        Returns:
+            A TimestampArtifact pointing to the saved timestamp JSON file.
+
+        Raises:
+            MyException: If any stage of the pipeline fails.
+        """
         try:
             logger.info("Starting timestamp generation pipeline")
 
             transcript = self.load_transcript()
 
             segments = transcript["segments"]
+
             prepared_transcript = self.prepare_transcript(
                 segments
             )

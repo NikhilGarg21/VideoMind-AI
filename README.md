@@ -1,4 +1,4 @@
-# VideoMind 🎥
+# VideoMind AI🎥
 
 VideoMind is a video intelligence pipeline that transforms video content into structured, timestamp-aware information.
 

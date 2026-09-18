@@ -18,14 +18,12 @@ class LLMClient:
             api_key = os.getenv("GROQ_API_KEY")
 
             if not api_key:
-                raise ValueError(
-                    "GROQ_API_KEY is not set in environment variables"
-                )
+                raise ValueError("GROQ_API_KEY is not set in environment variables")
 
             self.llm = ChatGroq(
                 model="openai/gpt-oss-120b",
                 temperature=0,
-                max_tokens=2500,
+                max_tokens=4096,
                 reasoning_effort="medium",
                 api_key=api_key,
             )
@@ -36,4 +34,9 @@ class LLMClient:
             raise MyException(e, sys) from e
 
     def get_llm(self):
+        """
+            Return the initialized Groq LLM instance.
+            Returns:
+                The configured ChatGroq client.
+        """
         return self.llm

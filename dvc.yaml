@@ -7,10 +7,8 @@ stages:
       - src/entity/config_entity.py
       - src/entity/artifact_entity.py
       - src/constants/__init__.py
-
     outs:
       - artifact/audio_ingestion
-
 
   audio_transcription:
     cmd: python -m scripts.run_audio_transcription
@@ -24,7 +22,6 @@ stages:
     outs:
       - artifact/audio_transcription
 
-
   text_processing:
     cmd: python -m scripts.run_text_processing
     deps:
@@ -36,7 +33,7 @@ stages:
       - artifact/audio_transcription
     outs:
       - artifact/text_processing
-  
+
   timestamp:
     cmd: python -m scripts.run_timestamps
     deps:
@@ -45,5 +42,20 @@ stages:
       - src/entity/config_entity.py
       - src/entity/artifact_entity.py
       - src/constants/__init__.py
+      - artifact/audio_transcription
+      - src/prompts.py
     outs:
       - artifact/timestamp
+
+  summary:
+    cmd: python -m scripts.run_summary
+    deps:
+      - scripts/run_summary.py
+      - src/components/summary.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/constants/__init__.py
+      - artifact/audio_transcription
+      - src/prompts.py
+    outs:
+      - artifact/summary

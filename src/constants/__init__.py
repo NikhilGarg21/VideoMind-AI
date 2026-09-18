@@ -14,6 +14,7 @@ AUDIO_CHUNKS_DIR = "chunks"
 AUDIO_FILE_NAME = "input_audio.mp3"
 VIDEO_METADATA_FILE_NAME = "video_data.json"
 VIDEO_URL: str = "https://www.youtube.com/watch?v=5HKaLStWNoc" 
+CHUNKS_DURATION = 60
 
 
 AUDIO_TRANSCRIPTION_DIR = "audio_transcription"
@@ -29,7 +30,13 @@ CHUNK_OVERLAP = 200
 TIMESTAMP_DIR = "timestamp"
 TIMESTAMP_FILE_NAME = "timestamp.json"
 MAX_CHARS_PER_TIMESTAMP_BATCH: int = 8000  
+MAX_LLM_RETRIES = 3
+LLM_RETRY_DELAY = 2.0
 
+
+SUMMARY_DIR = "summary"
+SUMMARY_FILE_NAME = "summary.json"
+MAX_CHARS_PER_SUMMARY_BATCH: int = 8000
 
 # Application constants
 APP_HOST: str = "0.0.0.0"

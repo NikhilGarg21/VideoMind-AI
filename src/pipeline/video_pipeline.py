@@ -3,12 +3,14 @@ from src.components.audio_ingestion import AudioIngestion
 from src.components.audio_transcription import AudioTranscription
 from src.components.text_processing import TextProcessing
 from src.components.timestamps import TimestampGenerator
+from src.components.summary import SummaryGenerator
 from src.llm.llm_client import LLMClient
 from src.entity.config_entity import (
     AudioIngestionConfig,
     AudioTranscriptionConfig,
     TextProcessingConfig,
     TimestampConfig,
+    SummaryConfig,
 )
 
 from src.entity.artifact_entity import (
@@ -16,6 +18,7 @@ from src.entity.artifact_entity import (
     AudioTranscriptionArtifact,
     TextProcessingArtifact,
     TimestampArtifact,
+    SummaryArtifact,
 )
 
 from src.exception import MyException
@@ -30,8 +33,10 @@ class VideoPipeline:
         self.audio_ingestion_config = AudioIngestionConfig()
         self.audio_transcription_config = AudioTranscriptionConfig()
         self.text_processing_config = TextProcessingConfig()
-        self.timestamp_conig = TimestampConfig
+        self.timestamp_conig = TimestampConfig()
+        self.summary_config = SummaryConfig()
         self.llm = LLMClient().get_llm()
+
     def start_audio_ingestion(self, video_url: str) -> AudioIngestionArtifact:
         """Start the audio ingestion component."""
 
@@ -106,8 +111,7 @@ class VideoPipeline:
             raise MyException(e, sys) from e
 
     def start_timestamp_generation(
-        self,
-        audio_transcription_artifact: AudioTranscriptionArtifact,
+        self, audio_transcription_artifact: AudioTranscriptionArtifact
     ) -> TimestampArtifact:
         try:
             logger.info("Starting timestamp generation")
@@ -124,6 +128,26 @@ class VideoPipeline:
 
             logger.info("Timestamp generation completed successfully")
 
+            return artifact
+        except Exception as e:
+            raise MyException(e, sys) from e
+
+    def start_summary_generation(
+        self,
+        audio_transcription_artifact: AudioTranscriptionArtifact,
+    ) -> SummaryArtifact:
+        try:
+            logger.info("Entered the start_summary_generation method")
+
+            summary_generator = SummaryGenerator(
+                audio_transcription_artifact=audio_transcription_artifact,
+                summary_config=self.summary_config,
+                llm=self.llm,
+            )
+
+            artifact = summary_generator.initiate_summary_generation()
+
+            logger.info("Exited the start_summary_generation method")
             return artifact
 
         except Exception as e:

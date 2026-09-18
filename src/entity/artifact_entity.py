@@ -21,3 +21,7 @@ class TextProcessingArtifact:
 @dataclass
 class TimestampArtifact:
     timestamp_file_path: str
+
+@dataclass
+class SummaryArtifact:
+    summary_file_path: str

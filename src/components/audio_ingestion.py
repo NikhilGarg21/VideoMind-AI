@@ -86,13 +86,12 @@ class AudioIngestion:
         except Exception as e:
             raise MyException(e, sys)
 
-    def create_audio_chunks(self, audio_path: str, chunk_duration: int = 60) -> str:
+    def create_audio_chunks(self, audio_path: str) -> str:
         """
         Split the downloaded audio file into fixed-length chunks using FFmpeg.
 
         Args:
             audio_path: Path to the full downloaded audio file.
-            chunk_duration: Length of each chunk in seconds (default 60).
 
         Returns:
             Path to the directory containing the generated audio chunks.
@@ -102,7 +101,7 @@ class AudioIngestion:
         """
         try:
             logger.info("Starting audio chunking")
-
+            chunk_duration = self.audio_ingestion_config.chunk_duration
             os.makedirs(self.audio_ingestion_config.audio_chunks_dir, exist_ok=True)
 
             chunk_pattern = os.path.join(
@@ -216,7 +215,7 @@ class AudioIngestion:
             audio_file_path, info = self.download_audio(video_url)
             audio_chunks_dir = self.create_audio_chunks(audio_file_path)
 
-            chunk_duration = 60
+            chunk_duration = self.audio_ingestion_config.chunk_duration
             chunk_durations = self.compute_chunk_durations(
                 total_duration=info.get("duration"),
                 chunk_duration=chunk_duration,

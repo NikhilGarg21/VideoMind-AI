@@ -34,6 +34,7 @@ class AudioIngestionConfig:
         audio_ingestion_dir,
         VIDEO_METADATA_FILE_NAME,
     )
+    chunk_duration: int = CHUNKS_DURATION
 
 
 @dataclass
@@ -73,3 +74,19 @@ class TimestampConfig:
         TIMESTAMP_FILE_NAME,
     )
     max_chars_per_batch: int = MAX_CHARS_PER_TIMESTAMP_BATCH
+    max_retries: int = MAX_LLM_RETRIES
+    retry_delay: float = LLM_RETRY_DELAY
+
+@dataclass
+class SummaryConfig:
+    summary_dir: str = os.path.join(
+        video_pipeline_config.artifact_dir,
+        SUMMARY_DIR,
+    )
+    summary_file_path: str = os.path.join(
+        summary_dir,
+        SUMMARY_FILE_NAME,
+    )
+    max_chars_per_batch: int = MAX_CHARS_PER_SUMMARY_BATCH
+    max_retries: int = MAX_LLM_RETRIES
+    retry_delay: float = LLM_RETRY_DELAY

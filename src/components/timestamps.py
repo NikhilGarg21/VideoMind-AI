@@ -1,6 +1,8 @@
 import os
 import sys
-
+import json
+import time
+import re
 from src.exception import MyException
 from src.logger import logger
 
@@ -51,6 +53,31 @@ class TimestampGenerator:
         except Exception as e:
             raise MyException(e, sys) from e
 
+    def extract_topics_from_error(self, error) -> list | None:
+        """
+        Attempt to salvage a valid topics list from a failed tool-call
+        error whose underlying model output was valid JSON but wasn't
+        wrapped in a proper tool call (a known intermittent Groq
+        behavior with structured output on longer prompts).
+
+        Args:
+            error: The exception raised by the LLM call.
+
+        Returns:
+            A parsed list of topic dicts if recoverable, otherwise None.
+        """
+        try:
+            error_str = str(error)
+            match = re.search(
+                r"'failed_generation':\s*'(\[.*\])'", error_str, re.DOTALL
+            )
+            if not match:
+                return None
+            raw_json = match.group(1).encode().decode("unicode_escape")
+            return json.loads(raw_json)
+        except Exception:
+            return None
+
     def load_transcript(self):
         """
         Load the timestamped transcript JSON from disk.
@@ -93,8 +120,7 @@ class TimestampGenerator:
             logger.info("Preparing transcript for LLM")
 
             transcript = "\n".join(
-                f"{segment['id']}|{segment['text']}"
-                for segment in segments
+                f"{segment['id']}|{segment['text']}" for segment in segments
             )
 
             logger.info("Transcript prepared successfully")
@@ -109,18 +135,27 @@ class TimestampGenerator:
         Call the LLM with a structured-output schema to identify semantic
         topics and their bounding segment IDs within the transcript.
 
+        Retries on transient tool-calling failures. If a failure includes
+        a valid JSON payload that just wasn't wrapped in a proper tool
+        call (a known intermittent Groq behavior), that payload is
+        salvaged directly instead of retrying unnecessarily.
+
         Args:
             transcript: The formatted `id|text` transcript string.
+            max_retries: Number of attempts before giving up.
+            retry_delay: Seconds to wait between retries.
 
         Returns:
             A list of topic dicts, each with `topic`, `start_segment`,
             `end_segment`, and an assigned `topic_id`.
 
         Raises:
-            MyException: If the LLM call or output parsing fails.
+            MyException: If all retries are exhausted and no salvage succeeds.
         """
         try:
             logger.info("Generating semantic timestamps using LLM")
+            max_retries = self.timestamp_config.max_retries
+            retry_delay = self.timestamp_config.retry_delay
             structured_llm = self.llm.with_structured_output(
                 {
                     "title": "timestamp_topics",
@@ -132,21 +167,11 @@ class TimestampGenerator:
                             "items": {
                                 "type": "object",
                                 "properties": {
-                                    "topic": {
-                                        "type": "string"
-                                    },
-                                    "start_segment": {
-                                        "type": "integer"
-                                    },
-                                    "end_segment": {
-                                        "type": "integer"
-                                    },
+                                    "topic": {"type": "string"},
+                                    "start_segment": {"type": "integer"},
+                                    "end_segment": {"type": "integer"},
                                 },
-                                "required": [
-                                    "topic",
-                                    "start_segment",
-                                    "end_segment",
-                                ],
+                                "required": ["topic", "start_segment", "end_segment"],
                             },
                         }
                     },
@@ -154,14 +179,37 @@ class TimestampGenerator:
                 }
             )
             prompt = Prompt.timestamp_prompt.format(transcript=transcript)
-            response = structured_llm.invoke(prompt)
 
-            topics = response["topics"]
-            for i, topic in enumerate(topics, start=1):
-                topic["topic_id"] = i
+            last_error = None
 
-            logger.info("Semantic timestamps generated successfully")
-            return topics
+            for attempt in range(1, max_retries + 1):
+                try:
+                    response = structured_llm.invoke(prompt)
+                    topics = response["topics"]
+                    for i, topic in enumerate(topics, start=1):
+                        topic["topic_id"] = i
+                    logger.info("Semantic timestamps generated successfully")
+                    return topics
+
+                except Exception as e:
+                    logger.warning(
+                        f"LLM tool-call attempt {attempt}/{max_retries} failed: {e}"
+                    )
+
+                    salvaged = self.extract_topics_from_error(e)
+                    if salvaged:
+                        logger.warning(
+                            "Recovered topics from failed tool call response"
+                        )
+                        for i, topic in enumerate(salvaged, start=1):
+                            topic["topic_id"] = i
+                        return salvaged
+
+                    last_error = e
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+
+            raise last_error
 
         except Exception as e:
             raise MyException(e, sys) from e
@@ -183,10 +231,7 @@ class TimestampGenerator:
         try:
             logger.info("Validating generated topics")
 
-            valid_segment_ids = {
-                segment["id"]
-                for segment in segments
-            }
+            valid_segment_ids = {segment["id"] for segment in segments}
 
             previous_end = -1
 
@@ -195,25 +240,18 @@ class TimestampGenerator:
                 end_segment = topic["end_segment"]
 
                 if start_segment not in valid_segment_ids:
-                    raise ValueError(
-                        f"Invalid start segment ID: {start_segment}"
-                    )
+                    raise ValueError(f"Invalid start segment ID: {start_segment}")
 
                 if end_segment not in valid_segment_ids:
-                    raise ValueError(
-                        f"Invalid end segment ID: {end_segment}"
-                    )
+                    raise ValueError(f"Invalid end segment ID: {end_segment}")
 
                 if start_segment > end_segment:
                     raise ValueError(
-                        f"Invalid segment range: "
-                        f"{start_segment}-{end_segment}"
+                        f"Invalid segment range: " f"{start_segment}-{end_segment}"
                     )
 
                 if start_segment <= previous_end:
-                    raise ValueError(
-                        "Overlapping or unordered topic ranges detected"
-                    )
+                    raise ValueError("Overlapping or unordered topic ranges detected")
 
                 previous_end = end_segment
 
@@ -242,32 +280,21 @@ class TimestampGenerator:
         try:
             logger.info("Converting segment IDs to timestamps")
 
-            segment_map = {
-                segment["id"]: segment
-                for segment in segments
-            }
+            segment_map = {segment["id"]: segment for segment in segments}
 
             timestamp_topics = []
 
             for topic in topics:
-                start_segment = segment_map[
-                    topic["start_segment"]
-                ]
+                start_segment = segment_map[topic["start_segment"]]
 
-                end_segment = segment_map[
-                    topic["end_segment"]
-                ]
+                end_segment = segment_map[topic["end_segment"]]
 
                 timestamp_topics.append(
                     {
                         "topic_id": topic["topic_id"],
                         "topic": topic["topic"],
-                        "start_time": format_timestamp(
-                            start_segment["start"]
-                        ),
-                        "end_time": format_timestamp(
-                            end_segment["end"]
-                        ),
+                        "start_time": format_timestamp(start_segment["start"]),
+                        "end_time": format_timestamp(end_segment["end"]),
                     }
                 )
 
@@ -382,13 +409,9 @@ class TimestampGenerator:
 
             segments = transcript["segments"]
 
-            prepared_transcript = self.prepare_transcript(
-                segments
-            )
+            prepared_transcript = self.prepare_transcript(segments)
 
-            topics = self.generate_timestamps(
-                prepared_transcript
-            )
+            topics = self.generate_timestamps(prepared_transcript)
 
             self.validate_topics(
                 topics,
@@ -400,17 +423,11 @@ class TimestampGenerator:
                 segments,
             )
 
-            timestamp_topics = self.close_gaps(
-                timestamp_topics
-            )
+            timestamp_topics = self.close_gaps(timestamp_topics)
 
-            self.save_timestamps(
-                timestamp_topics
-            )
+            self.save_timestamps(timestamp_topics)
 
-            logger.info(
-                "Timestamp generation pipeline completed successfully"
-            )
+            logger.info("Timestamp generation pipeline completed successfully")
 
             return TimestampArtifact(
                 timestamp_file_path=self.timestamp_config.timestamp_file_path

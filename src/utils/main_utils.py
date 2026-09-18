@@ -4,20 +4,47 @@ import json
 from src.exception import MyException
 
 def save_artifact_json(name: str, data: dict) -> None:
-    os.makedirs("artifact/dvc_meta", exist_ok=True)
-    with open(f"artifact/dvc_meta/{name}.json", "w") as f:
-        json.dump(data, f, indent=4)
+    """
+    Save a stage's artifact summary to the DVC metadata directory, used
+    for lightweight run tracking outside of DVC's own artifact outputs.
+
+    Args:
+        name: The stage name, used as the output filename (e.g. "audio_ingestion").
+        data: The artifact data to serialize.
+
+    Raises:
+        MyException: If saving fails.
+    """
+    try:
+        os.makedirs("artifact/dvc_meta", exist_ok=True)
+        with open(f"artifact/dvc_meta/{name}.json", "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        raise MyException(e, sys)
 
 
 def load_artifact_json(name: str) -> dict:
-    with open(f"artifact/dvc_meta/{name}.json") as f:
-        return json.load(f)
+    """
+    Load a previously saved stage artifact summary from the DVC metadata
+    directory.
+
+    Args:
+        name: The stage name whose artifact summary to load.
+
+    Returns:
+        The parsed artifact data dict.
+
+    Raises:
+        MyException: If loading fails.
+    """
+    try:
+        with open(f"artifact/dvc_meta/{name}.json") as f:
+            return json.load(f)
+    except Exception as e:
+        raise MyException(e, sys)
 
 
-def save_json(
-    data: dict,
-    file_path: str,
-) -> str:
+def save_json(data: dict,file_path: str) -> str:
     """Save dictionary data as a JSON file."""
     try:
         output_dir = os.path.dirname(file_path)
@@ -28,12 +55,7 @@ def save_json(
                 exist_ok=True,
             )
 
-        with open(
-            file_path,
-            "w",
-            encoding="utf-8",
-        ) as file:
-
+        with open(file_path, "w", encoding="utf-8") as file:
             json.dump(
                 data,
                 file,

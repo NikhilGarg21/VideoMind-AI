@@ -337,12 +337,12 @@ Artifacts allow each stage to pass structured information to the next stage with
 * [x] Semantic topic generation
 * [x] Topic/timestamp validation
 * [x] DVC pipeline integration
+* [x] Video summarization using timestamped text chunks
+* [x] Chunk-level summaries
+* [x] Overall video summary
 
 ### Upcoming
 
-* [ ] Video summarization using timestamped text chunks
-* [ ] Chunk-level summaries
-* [ ] Overall video summary
 * [ ] Embedding generation
 * [ ] Vector database
 * [ ] Retrieval-Augmented Generation

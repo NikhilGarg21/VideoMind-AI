@@ -100,8 +100,10 @@ If they don't contain enough information, say so instead of guessing.
 Transcript:
 {context}
 
-Question: {question}
+Question:
+{question}
 
-Answer in a clear, well-structured format appropriate to the question.
-Keep the answer concise and within 10 lines.
+Answer directly and use a format appropriate to the question.
+For comparisons or multiple parts, use concise bullets.
+Keep the answer clear and within 10 lines.
 """

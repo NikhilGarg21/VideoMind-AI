@@ -25,3 +25,8 @@ class TimestampArtifact:
 @dataclass
 class SummaryArtifact:
     summary_file_path: str
+
+@dataclass
+class EmbeddingArtifact:
+    index_file_path: str
+    metadata_file_path: str

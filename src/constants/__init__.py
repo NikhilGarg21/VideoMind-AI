@@ -1,43 +1,50 @@
 import os
-from datetime import date
 from dotenv import load_dotenv
+
 load_dotenv()
 
+# --- Pipeline ---
 PIPELINE_NAME: str = "VideoMind"
-CURRENT_YEAR = date.today().year
+ARTIFACT_DIR: str = "artifact"
 
-ARTIFACT_DIR = "artifact"
+# --- Audio Ingestion ---
+AUDIO_INGESTION_DIR: str = "audio_ingestion"
+AUDIO_DIR: str = "audio"
+AUDIO_CHUNKS_DIR: str = "chunks"
+AUDIO_FILE_NAME: str = "input_audio.mp3"
+VIDEO_METADATA_FILE_NAME: str = "video_data.json"
+VIDEO_URL: str = "https://www.youtube.com/watch?v=5HKaLStWNoc"
+CHUNKS_DURATION: int = 60
 
-AUDIO_INGESTION_DIR = "audio_ingestion"
-AUDIO_DIR = "audio"
-AUDIO_CHUNKS_DIR = "chunks"
-AUDIO_FILE_NAME = "input_audio.mp3"
-VIDEO_METADATA_FILE_NAME = "video_data.json"
-VIDEO_URL: str = "https://www.youtube.com/watch?v=5HKaLStWNoc" 
-CHUNKS_DURATION = 60
+# --- Audio Transcription ---
+AUDIO_TRANSCRIPTION_DIR: str = "audio_transcription"
+TRANSCRIPT_FILE_NAME: str = "transcript.json"
 
+# --- Text Processing ---
+TEXT_PROCESSING_DIR: str = "text_processing"
+TEXT_CHUNKS_DIR: str = "text_chunks"
+CHUNK_SIZE: int = 4000
+CHUNK_OVERLAP: int = 200
 
-AUDIO_TRANSCRIPTION_DIR = "audio_transcription"
-TRANSCRIPT_FILE_NAME = "transcript.jason"
+# --- Timestamp Generation ---
+TIMESTAMP_DIR: str = "timestamp"
+TIMESTAMP_FILE_NAME: str = "timestamp.json"
+MAX_CHARS_PER_TIMESTAMP_BATCH: int = 8000
+MAX_LLM_RETRIES: int = 3
+LLM_RETRY_DELAY: float = 2.0
 
-
-TEXT_PROCESSING_DIR = "text_processing"
-TEXT_CHUNKS_DIR = "text_chunks"
-
-CHUNK_SIZE = 4000
-CHUNK_OVERLAP = 200
-
-TIMESTAMP_DIR = "timestamp"
-TIMESTAMP_FILE_NAME = "timestamp.json"
-MAX_CHARS_PER_TIMESTAMP_BATCH: int = 8000  
-MAX_LLM_RETRIES = 3
-LLM_RETRY_DELAY = 2.0
-
-
-SUMMARY_DIR = "summary"
-SUMMARY_FILE_NAME = "summary.json"
+# --- Summary Generation ---
+SUMMARY_DIR: str = "summary"
+SUMMARY_FILE_NAME: str = "summary.json"
 MAX_CHARS_PER_SUMMARY_BATCH: int = 8000
 
-# Application constants
+# --- Embedding / Q&A ---
+EMBEDDING_DIR: str = "embedding"
+EMBEDDING_INDEX_FILE_NAME: str = "index.faiss"
+EMBEDDING_METADATA_FILE_NAME: str = "metadata.json"
+EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+QA_TOP_K: int = 2
+
+# --- Application ---
 APP_HOST: str = "0.0.0.0"
 APP_PORT: int = 5000

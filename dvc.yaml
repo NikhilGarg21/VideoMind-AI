@@ -59,3 +59,15 @@ stages:
       - src/prompts.py
     outs:
       - artifact/summary
+
+  embedding:
+    cmd: python -m scripts.run_embedding
+    deps:
+      - scripts/run_embedding.py
+      - src/components/embedding_indexer.py
+      - src/entity/config_entity.py
+      - src/entity/artifact_entity.py
+      - src/constants/__init__.py
+      - artifact/text_processing
+    outs:
+      - artifact/embedding

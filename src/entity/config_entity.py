@@ -90,3 +90,20 @@ class SummaryConfig:
     max_chars_per_batch: int = MAX_CHARS_PER_SUMMARY_BATCH
     max_retries: int = MAX_LLM_RETRIES
     retry_delay: float = LLM_RETRY_DELAY
+
+@dataclass
+class EmbeddingConfig:
+    embedding_dir: str = os.path.join(
+        video_pipeline_config.artifact_dir,
+        EMBEDDING_DIR,
+    )
+    index_file_path: str = os.path.join(
+        embedding_dir,
+        EMBEDDING_INDEX_FILE_NAME,
+    )
+    metadata_file_path: str = os.path.join(
+        embedding_dir,
+        EMBEDDING_METADATA_FILE_NAME,
+    )
+    model_name: str = EMBEDDING_MODEL_NAME
+    top_k: int = QA_TOP_K

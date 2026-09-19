@@ -92,3 +92,16 @@ Partial summaries:
 
 {numbered}
 """
+
+    qa_prompt = """
+Answer the question using ONLY the transcript excerpts below. If the
+excerpts don't contain enough information to answer, say so clearly
+rather than guessing.
+
+Transcript excerpts:
+{context}
+
+Question: {question}
+
+Answer concisely, in 2-4 sentences.
+"""

@@ -1,6 +1,6 @@
 import os
 import sys
-import whisper
+
 
 from src.entity.config_entity import AudioTranscriptionConfig
 from src.entity.artifact_entity import (
@@ -83,6 +83,7 @@ class AudioTranscription:
         """
         try:
             logger.info("Loading Whisper model")
+            import whisper
             model = whisper.load_model("base")
             logger.info("Whisper model loaded successfully")
             return model

@@ -1,6 +1,8 @@
 import os
 import sys
+import time
 
+from groq import Groq
 
 from src.entity.config_entity import AudioTranscriptionConfig
 from src.entity.artifact_entity import (
@@ -13,7 +15,8 @@ from src.utils.main_utils import save_json
 
 
 class AudioTranscription:
-    """Transcribes audio chunks and preserves timestamp information."""
+    """Transcribes audio chunks via Groq's hosted Whisper API and preserves
+    timestamp information."""
 
     def __init__(
         self,
@@ -27,7 +30,8 @@ class AudioTranscription:
             audio_ingestion_artifact: Output of the audio ingestion stage,
                 including the chunk directory and per-chunk durations.
             audio_transcription_config: Configuration holding the output
-                path for the final transcript JSON.
+                transcript path, the Groq Whisper model name, and retry
+                settings.
         """
         try:
             self.audio_ingestion_artifact = audio_ingestion_artifact
@@ -51,7 +55,7 @@ class AudioTranscription:
             audio_chunks_dir = self.audio_ingestion_artifact.audio_chunks_dir
             if not os.path.exists(audio_chunks_dir):
                 raise FileNotFoundError(
-                    f"Audio chunks directory not found: " f"{audio_chunks_dir}"
+                    f"Audio chunks directory not found: {audio_chunks_dir}"
                 )
 
             audio_chunks = sorted(
@@ -71,30 +75,80 @@ class AudioTranscription:
         except Exception as e:
             raise MyException(e, sys) from e
 
-    def load_whisper_model(self):
+    def load_transcription_client(self) -> Groq:
         """
-        Load the Whisper transcription model.
+        Load the Groq API client used for hosted Whisper transcription.
 
         Returns:
-            The loaded Whisper model instance, ready for transcription.
+            An initialized Groq client.
 
         Raises:
-            MyException: If the model fails to load.
+            MyException: If GROQ_API_KEY is not set or the client fails
+                to initialize.
         """
         try:
-            logger.info("Loading Whisper model")
-            import whisper
-            model = whisper.load_model("base")
-            logger.info("Whisper model loaded successfully")
-            return model
+            logger.info("Initializing Groq transcription client")
+
+            api_key = os.getenv("GROQ_API_KEY")
+            if not api_key:
+                raise ValueError("GROQ_API_KEY is not set in environment variables")
+
+            client = Groq(api_key=api_key)
+
+            logger.info("Groq transcription client initialized successfully")
+            return client
 
         except Exception as e:
             raise MyException(e, sys) from e
 
-    def transcribe_audio_chunks(self, audio_chunks: list, model) -> list:
+    def transcribe_chunk_with_retry(self, client: Groq, audio_chunk: str) -> list:
         """
-        Transcribe each audio chunk and adjust segment timestamps to be
-        relative to the full (unchunked) audio timeline.
+        Transcribe a single audio chunk via Groq's Whisper API, retrying
+        on transient failures (network errors, rate limits).
+
+        Args:
+            client: The initialized Groq client.
+            audio_chunk: Path to the audio chunk file.
+
+        Returns:
+            The list of segment dicts returned by Groq for this chunk,
+            each with `start`, `end`, and `text`.
+
+        Raises:
+            MyException: If all retries are exhausted.
+        """
+        max_retries = self.audio_transcription_config.max_retries
+        retry_delay = self.audio_transcription_config.retry_delay
+        last_error = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                with open(audio_chunk, "rb") as file:
+                    response = client.audio.transcriptions.create(
+                        file=(os.path.basename(audio_chunk), file.read()),
+                        model=self.audio_transcription_config.model_name,
+                        language="en",
+                        response_format="verbose_json",
+                    )
+
+                segments = response.segments or []
+                return segments
+
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    f"Transcription attempt {attempt}/{max_retries} failed "
+                    f"for {os.path.basename(audio_chunk)}: {e}"
+                )
+                if attempt < max_retries:
+                    time.sleep(retry_delay * attempt)
+
+        raise MyException(last_error, sys) from last_error
+
+    def transcribe_audio_chunks(self, audio_chunks: list, client: Groq) -> list:
+        """
+        Transcribe each audio chunk via Groq and adjust segment timestamps
+        to be relative to the full (unchunked) audio timeline.
 
         Uses precomputed chunk durations from the ingestion artifact
         (rather than probing each file) to accumulate the timestamp
@@ -102,7 +156,7 @@ class AudioTranscription:
 
         Args:
             audio_chunks: Sorted list of paths to audio chunk files.
-            model: The loaded Whisper model to transcribe with.
+            client: The initialized Groq client to transcribe with.
 
         Returns:
             A list of segment dicts, each with a global `id`, `start`,
@@ -121,29 +175,17 @@ class AudioTranscription:
             for chunk_index, (audio_chunk, chunk_duration) in enumerate(
                 zip(audio_chunks, chunk_durations)
             ):
-                logger.info(f"Transcribing audio chunk " f"{chunk_index + 1}")
+                logger.info(f"Transcribing audio chunk {chunk_index + 1}")
 
-                result = model.transcribe(
-                    audio_chunk,
-                    language="en",
-                    fp16=False,
-                )
+                raw_segments = self.transcribe_chunk_with_retry(client, audio_chunk)
 
-                for segment in result["segments"]:
-
+                for segment in raw_segments:
                     segment_data = {
                         "id": len(all_segments),
-                        "start": round(
-                            cumulative_offset + segment["start"],
-                            2,
-                        ),
-                        "end": round(
-                            cumulative_offset + segment["end"],
-                            2,
-                        ),
+                        "start": round(cumulative_offset + segment["start"], 2),
+                        "end": round(cumulative_offset + segment["end"], 2),
                         "text": segment["text"].strip(),
                     }
-
                     all_segments.append(segment_data)
 
                 cumulative_offset += chunk_duration
@@ -151,7 +193,7 @@ class AudioTranscription:
             if not all_segments:
                 raise ValueError("No transcription segments were created")
 
-            logger.info(f"Created {len(all_segments)} " f"transcription segments")
+            logger.info(f"Created {len(all_segments)} transcription segments")
             return all_segments
 
         except Exception as e:
@@ -179,7 +221,7 @@ class AudioTranscription:
                 "segments": segments,
             }
 
-            logger.info("Structured transcript data " "created successfully")
+            logger.info("Structured transcript data created successfully")
             return transcript_data
 
         except Exception as e:
@@ -188,7 +230,7 @@ class AudioTranscription:
     def initiate_audio_transcription(self) -> AudioTranscriptionArtifact:
         """
         Execute the complete audio transcription process: validate chunks,
-        load the model, transcribe, structure the output, and save it.
+        load the Groq client, transcribe, structure the output, and save it.
 
         Returns:
             An AudioTranscriptionArtifact pointing to the saved transcript
@@ -200,11 +242,11 @@ class AudioTranscription:
         try:
             logger.info("Starting audio transcription pipeline")
             audio_chunks = self.validate_audio_chunks()
-            model = self.load_whisper_model()
+            client = self.load_transcription_client()
 
             segments = self.transcribe_audio_chunks(
                 audio_chunks=audio_chunks,
-                model=model,
+                client=client,
             )
 
             transcript_data = self.create_transcript_data(segments=segments)
@@ -215,7 +257,7 @@ class AudioTranscription:
                 transcript_file_path=transcript_file_path
             )
 
-            logger.info("Audio transcription artifact " "created successfully")
+            logger.info("Audio transcription artifact created successfully")
             return audio_transcription_artifact
 
         except Exception as e:

@@ -17,6 +17,9 @@ VIDEO_URL: str = "https://www.youtube.com/watch?v=5HKaLStWNoc"
 CHUNKS_DURATION: int = 60
 
 # --- Audio Transcription ---
+WHISPER_MODEL_NAME: str = "whisper-large-v3-turbo"
+TRANSCRIPTION_MAX_RETRIES: int = 3
+TRANSCRIPTION_RETRY_DELAY: float = 2.0
 AUDIO_TRANSCRIPTION_DIR: str = "audio_transcription"
 TRANSCRIPT_FILE_NAME: str = "transcript.json"
 

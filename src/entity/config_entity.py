@@ -47,7 +47,9 @@ class AudioTranscriptionConfig:
         audio_transcription_dir,
         TRANSCRIPT_FILE_NAME,
     )
-
+    model_name: str = WHISPER_MODEL_NAME
+    max_retries: int = TRANSCRIPTION_MAX_RETRIES
+    retry_delay: float = TRANSCRIPTION_RETRY_DELAY
 
 @dataclass
 class TextProcessingConfig:

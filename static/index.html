@@ -1,166 +1,160 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>VideoMind — understand any video</title>
-<link rel="icon" href="data:," />
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css" />
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VideoMind — understand any video</title>
+  <link rel="icon" href="data:," />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+    rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css?v=2" />
 </head>
+
 <body>
 
-<div class="grain"></div>
+  <div class="grain"></div>
 
-<header class="topbar">
-  <div class="wordmark">
-    <span class="wordmark-mark">◐</span>
-    <span>VideoMind</span>
-  </div>
-  <div class="status-chip" id="statusChip" data-state="idle">
-    <span class="status-dot"></span>
-    <span id="statusChipText">Idle</span>
-  </div>
-</header>
-
-<main>
-
-  <!-- ============ HERO ============ -->
-  <section class="hero" id="heroSection">
-    <div class="hero-copy">
-      <h1>Understand any video<br>without watching it.</h1>
-      <p class="hero-sub">
-        Paste a link. VideoMind transcribes it, finds where the topic actually
-        changes, writes a fact-checked summary, and answers your questions —
-        with the timestamp to prove it.
-      </p>
-
-      <form class="console" id="inputForm">
-        <div class="console-row">
-          <div class="input-slot">
-            <input
-              type="url"
-              id="urlInput"
-              placeholder="Paste a YouTube link"
-              autocomplete="off"
-            />
-            <button type="button" class="check-btn" id="checkBtn">Check</button>
-          </div>
-        </div>
-
-        <div class="console-divider"><span>or</span></div>
-
-        <div
-          class="dropzone"
-          id="dropzone"
-          tabindex="0"
-          role="button"
-          aria-label="Upload a video or audio file"
-        >
-          <input type="file" id="fileInput" accept="video/*,audio/*" hidden />
-          <span id="dropzoneText">Drop a video or audio file, or click to browse</span>
-        </div>
-
-        <div class="preview-card" id="previewCard" hidden>
-          <img id="previewThumb" alt="" />
-          <div class="preview-info">
-            <div class="preview-title" id="previewTitle"></div>
-            <div class="preview-meta" id="previewMeta"></div>
-          </div>
-        </div>
-
-        <button type="submit" class="analyze-btn" id="analyzeBtn" disabled>
-          Analyze
-        </button>
-        <p class="form-error" id="formError" hidden></p>
-      </form>
+  <header class="topbar">
+    <div class="wordmark">
+      <span class="wordmark-mark">◐</span>
+      <span>VideoMind</span>
     </div>
-
-    <div class="hero-visual" aria-hidden="true">
-      <svg viewBox="0 0 400 220" class="waveform-svg" id="waveformSvg">
-        <!-- bars injected by script.js -->
-      </svg>
+    <div class="status-chip" id="statusChip" data-state="idle">
+      <span class="status-dot"></span>
+      <span id="statusChipText">Idle</span>
     </div>
-  </section>
+  </header>
 
-  <!-- ============ SIGNAL CHAIN ============ -->
-  <section class="signal-chain" id="signalChain" hidden>
-    <div class="signal-chain-header">
-      <h2>Signal chain</h2>
-      <p id="chainSubtext">Six passes over the audio, each one built for a reason.</p>
-    </div>
-    <div class="chain-track" id="chainTrack"></div>
-  </section>
+  <main>
 
-  <!-- ============ RESULTS ============ -->
-  <section class="results" id="resultsSection" hidden>
-
-    <div class="video-panel">
-      <div class="video-embed" id="videoEmbed"></div>
-      <div class="video-meta">
-        <h3 id="resultTitle"></h3>
-        <p id="resultChannel"></p>
-      </div>
-    </div>
-
-    <div class="results-body">
-      <nav class="tabs" id="tabs">
-        <button class="tab active" data-tab="overview">Overview</button>
-        <button class="tab" data-tab="chapters">Chapters</button>
-        <button class="tab" data-tab="transcript">Transcript</button>
-        <button class="tab" data-tab="ask">Ask</button>
-      </nav>
-
-      <div class="tab-panel active" id="panel-overview">
-        <p class="claim-note">
-          Every figure below is checked against the transcript — anything
-          that looks inconsistent gets flagged, not stated as fact.
+    <!-- ============ HERO ============ -->
+    <section class="hero" id="heroSection">
+      <div class="hero-copy">
+        <h1>Understand any video<br>without watching it.</h1>
+        <p class="hero-sub">
+          Paste a link. VideoMind transcribes it, finds where the topic actually
+          changes, writes a fact-checked summary, and answers your questions —
+          with the timestamp to prove it.
         </p>
-        <div class="tldr" id="tldrText"></div>
-        <ol class="key-points" id="keyPoints"></ol>
-      </div>
 
-      <div class="tab-panel" id="panel-chapters">
-        <p class="claim-note">
-          Chapters follow the conversation, not the clock — no fixed-length
-          slices. Click a timestamp to jump there.
-        </p>
-        <ul class="chapters-list" id="chaptersList"></ul>
-      </div>
-
-      <div class="tab-panel" id="panel-transcript">
-        <input type="text" class="transcript-search" id="transcriptSearch" placeholder="Search the transcript" />
-        <ul class="transcript-list" id="transcriptList"></ul>
-      </div>
-
-      <div class="tab-panel" id="panel-ask">
-        <div class="chat-log" id="chatLog">
-          <div class="chat-empty" id="chatEmpty">
-            Ask anything about this video. Answers are grounded in the
-            transcript, with the exact moment they came from.
+        <form class="console" id="inputForm">
+          <div class="console-row">
+            <div class="input-slot">
+              <input type="url" id="urlInput" placeholder="Paste a YouTube link" autocomplete="off" />
+              <button type="button" class="check-btn" id="checkBtn">Check</button>
+            </div>
           </div>
-        </div>
-        <form class="chat-input-row" id="chatForm">
-          <input type="text" id="chatInput" placeholder="Ask a question…" autocomplete="off" />
-          <button type="submit" id="chatSend">Ask</button>
+
+          <div class="console-divider"><span>or</span></div>
+
+          <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload a video or audio file">
+            <input type="file" id="fileInput" accept="video/*,audio/*" hidden />
+            <span id="dropzoneText">Drop a video or audio file, or click to browse</span>
+          </div>
+
+          <div class="preview-card" id="previewCard" hidden>
+            <img id="previewThumb" alt="" />
+            <div class="preview-info">
+              <div class="preview-title" id="previewTitle"></div>
+              <div class="preview-meta" id="previewMeta"></div>
+            </div>
+          </div>
+
+          <button type="submit" class="analyze-btn" id="analyzeBtn" disabled>
+            Analyze
+          </button>
+          <p class="form-error" id="formError" hidden></p>
         </form>
       </div>
+
+      <div class="hero-visual" aria-hidden="true">
+        <svg viewBox="0 0 400 220" class="waveform-svg" id="waveformSvg">
+          <!-- bars injected by script.js -->
+        </svg>
+      </div>
+    </section>
+
+    <!-- ============ SIGNAL CHAIN ============ -->
+    <section class="signal-chain" id="signalChain" hidden>
+      <div class="signal-chain-header">
+        <h2>Signal chain</h2>
+        <p id="chainSubtext">Six passes over the audio, each one built for a reason.</p>
+      </div>
+      <div class="chain-track" id="chainTrack"></div>
+    </section>
+
+    <!-- ============ RESULTS ============ -->
+    <section class="results" id="resultsSection" hidden>
+
+      <div class="video-panel">
+        <div class="video-embed" id="videoEmbed"></div>
+        <div class="video-meta">
+          <h3 id="resultTitle"></h3>
+          <p id="resultChannel"></p>
+        </div>
+      </div>
+
+      <div class="results-body">
+        <nav class="tabs" id="tabs">
+          <button class="tab active" data-tab="overview">Overview</button>
+          <button class="tab" data-tab="chapters">Chapters</button>
+          <button class="tab" data-tab="transcript">Transcript</button>
+          <button class="tab" data-tab="ask">Ask</button>
+        </nav>
+
+        <div class="tab-panel active" id="panel-overview">
+          <p class="claim-note">
+            Every figure below is grounded in the transcript — anything
+            that looks inconsistent gets flagged, not stated as fact.
+          </p>
+          <div class="tldr" id="tldrText"></div>
+          <ol class="key-points" id="keyPoints"></ol>
+        </div>
+
+        <div class="tab-panel" id="panel-chapters">
+          <p class="claim-note">
+            Chapters follow the conversation, not the clock — no fixed-length
+            slices. Click a timestamp to jump there.
+          </p>
+          <ul class="chapters-list" id="chaptersList"></ul>
+        </div>
+
+        <div class="tab-panel" id="panel-transcript">
+          <input type="text" class="transcript-search" id="transcriptSearch" placeholder="Search the transcript" />
+          <ul class="transcript-list" id="transcriptList"></ul>
+        </div>
+
+        <div class="tab-panel" id="panel-ask">
+          <div class="chat-log" id="chatLog">
+            <div class="chat-empty" id="chatEmpty">
+              Ask anything about this video. Answers are grounded in the
+              transcript, with the exact moment they came from.
+            </div>
+          </div>
+          <form class="chat-input-row" id="chatForm">
+            <input type="text" id="chatInput" placeholder="Ask a question…" autocomplete="off" />
+            <button type="submit" id="chatSend">Ask</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <div class="error-banner" id="errorBanner" hidden>
+      <strong>Something went wrong.</strong>
+      <span id="errorBannerText"></span>
     </div>
-  </section>
 
-  <div class="error-banner" id="errorBanner" hidden>
-    <strong>Something went wrong.</strong>
-    <span id="errorBannerText"></span>
-  </div>
+  </main>
 
-</main>
+  <footer class="footer">
+    <span>VideoMind — built on a pipeline that shows its work.</span>
+  </footer>
 
-<footer class="footer">
-  <span>VideoMind — built on a pipeline that shows its work.</span>
-</footer>
-
-<script src="/static/script.js"></script>
+  <script src="/static/script.js?v=2"></script>
 </body>
+
 </html>

@@ -13,46 +13,46 @@ stages:
       size: 8801
     - path: src/constants/__init__.py
       hash: md5
-      md5: ae7f8824aa28862b908f3acbb29f7a74
-      size: 1423
+      md5: 3d7a6b816755df6d75ea8bd4dc62f079
+      size: 1550
     - path: src/entity/artifact_entity.py
       hash: md5
       md5: 1f7d7ce50af196017af20191893010f2
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     outs:
     - path: artifact/audio_ingestion
       hash: md5
-      md5: b2dc55455cb5dbd139f1fd5e7074445b.dir
-      size: 29718690
-      nfiles: 15
+      md5: 999608b231b14b2cd46eb15d331ff1e6.dir
+      size: 1046902
+      nfiles: 3
   audio_transcription:
     cmd: python -m scripts.run_audio_transcription
     deps:
     - path: artifact/audio_ingestion
       hash: md5
-      md5: b2dc55455cb5dbd139f1fd5e7074445b.dir
-      size: 29718690
-      nfiles: 15
+      md5: 999608b231b14b2cd46eb15d331ff1e6.dir
+      size: 1046902
+      nfiles: 3
     - path: scripts/run_audio_transcription.py
       hash: md5
       md5: 1eeb2ddb2e5b6665947fb1fc4c187db7
       size: 1135
     - path: src/components/audio_transcription.py
       hash: md5
-      md5: c661b6212e19d526664a0febad5a34e0
-      size: 7624
+      md5: 2e2f59c55baf08b31eb08b724d5f1b6c
+      size: 9472
     - path: src/entity/artifact_entity.py
       hash: md5
       md5: 1f7d7ce50af196017af20191893010f2
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     - path: src/utils/main_utils.py
       hash: md5
       md5: 3312b1daa870e5473ff0021657218c6a
@@ -60,16 +60,16 @@ stages:
     outs:
     - path: artifact/audio_transcription
       hash: md5
-      md5: 7de2e0d939bb6eeee99ee3c700a32ec0.dir
-      size: 48420
+      md5: 53b07fc5e5eae4143fc91b1db52a0c49.dir
+      size: 1954
       nfiles: 1
   text_processing:
     cmd: python -m scripts.run_text_processing
     deps:
     - path: artifact/audio_transcription
       hash: md5
-      md5: 7de2e0d939bb6eeee99ee3c700a32ec0.dir
-      size: 48420
+      md5: 53b07fc5e5eae4143fc91b1db52a0c49.dir
+      size: 1954
       nfiles: 1
     - path: scripts/run_text_processing.py
       hash: md5
@@ -85,8 +85,8 @@ stages:
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     - path: src/utils/main_utils.py
       hash: md5
       md5: 3312b1daa870e5473ff0021657218c6a
@@ -94,16 +94,16 @@ stages:
     outs:
     - path: artifact/text_processing
       hash: md5
-      md5: e13a4b580f5874d7445ac65ac9572f92.dir
-      size: 14015
-      nfiles: 4
+      md5: 0c32265c0e7f5d799f7ceaba6f20f94d.dir
+      size: 452
+      nfiles: 1
   timestamp:
     cmd: python -m scripts.run_timestamps
     deps:
     - path: artifact/audio_transcription
       hash: md5
-      md5: 7de2e0d939bb6eeee99ee3c700a32ec0.dir
-      size: 48420
+      md5: 53b07fc5e5eae4143fc91b1db52a0c49.dir
+      size: 1954
       nfiles: 1
     - path: scripts/run_timestamps.py
       hash: md5
@@ -115,33 +115,33 @@ stages:
       size: 14949
     - path: src/constants/__init__.py
       hash: md5
-      md5: ae7f8824aa28862b908f3acbb29f7a74
-      size: 1423
+      md5: 3d7a6b816755df6d75ea8bd4dc62f079
+      size: 1550
     - path: src/entity/artifact_entity.py
       hash: md5
       md5: 1f7d7ce50af196017af20191893010f2
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     - path: src/prompts.py
       hash: md5
-      md5: 2ccad347ce8db9f222f6a69bba00dbc3
-      size: 4387
+      md5: 91c6f160349040b4448d81891663b1be
+      size: 4416
     outs:
     - path: artifact/timestamp
       hash: md5
-      md5: cbd3ff15a3163875f497f074fd603fb6.dir
-      size: 3272
+      md5: 36022d11b9e9b121556d48ed1e50aa14.dir
+      size: 787
       nfiles: 1
   summary:
     cmd: python -m scripts.run_summary
     deps:
     - path: artifact/audio_transcription
       hash: md5
-      md5: 7de2e0d939bb6eeee99ee3c700a32ec0.dir
-      size: 48420
+      md5: 53b07fc5e5eae4143fc91b1db52a0c49.dir
+      size: 1954
       nfiles: 1
     - path: scripts/run_summary.py
       hash: md5
@@ -153,34 +153,34 @@ stages:
       size: 11061
     - path: src/constants/__init__.py
       hash: md5
-      md5: ae7f8824aa28862b908f3acbb29f7a74
-      size: 1423
+      md5: 3d7a6b816755df6d75ea8bd4dc62f079
+      size: 1550
     - path: src/entity/artifact_entity.py
       hash: md5
       md5: 1f7d7ce50af196017af20191893010f2
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     - path: src/prompts.py
       hash: md5
-      md5: 2ccad347ce8db9f222f6a69bba00dbc3
-      size: 4387
+      md5: 91c6f160349040b4448d81891663b1be
+      size: 4416
     outs:
     - path: artifact/summary
       hash: md5
-      md5: a09818e6170592c9cd40c0713f330777.dir
-      size: 2564
+      md5: f72b9cd3dbcde9b5a914fad1fcc699b0.dir
+      size: 1675
       nfiles: 1
   embedding:
     cmd: python -m scripts.run_embedding
     deps:
     - path: artifact/text_processing
       hash: md5
-      md5: e13a4b580f5874d7445ac65ac9572f92.dir
-      size: 14015
-      nfiles: 4
+      md5: 0c32265c0e7f5d799f7ceaba6f20f94d.dir
+      size: 452
+      nfiles: 1
     - path: scripts/run_embedding.py
       hash: md5
       md5: 0d7471d74f54d9e607ca461237b95e52
@@ -191,19 +191,19 @@ stages:
       size: 5194
     - path: src/constants/__init__.py
       hash: md5
-      md5: ae7f8824aa28862b908f3acbb29f7a74
-      size: 1423
+      md5: 3d7a6b816755df6d75ea8bd4dc62f079
+      size: 1550
     - path: src/entity/artifact_entity.py
       hash: md5
       md5: 1f7d7ce50af196017af20191893010f2
       size: 613
     - path: src/entity/config_entity.py
       hash: md5
-      md5: d704e629bb58041f598bc898e0037ae6
-      size: 2721
+      md5: 0003b389109394792dac6c5ac1aa49fd
+      size: 2863
     outs:
     - path: artifact/embedding
       hash: md5
-      md5: 756f90365405172404148141a83e80e4.dir
-      size: 20499
+      md5: 63f166863536f9c8b682e9e4d7e461e4.dir
+      size: 2127
       nfiles: 2

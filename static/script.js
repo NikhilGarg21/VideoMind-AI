@@ -4,14 +4,15 @@
 
 const state = {
   jobId: null,
-  sourceType: null,   // "url" | "upload"
+  sourceType: null, // "url" | "upload"
   selectedFile: null,
-  validated: null,    // result of /api/validate, or null
+  validated: null, // result of /api/validate, or null
   pollTimer: null,
+  lastStartedUrl: null,
   stageDefs: [],
   ytPlayer: null,
   ytReady: false,
-  mediaEl: null,       // <video> element when playing an uploaded file
+  mediaEl: null, // <video> element when playing an uploaded file
   results: null,
 };
 
@@ -91,11 +92,13 @@ function buildChainModules() {
       <div class="chain-module" data-status="pending" data-key="${stage.key}">
         <div class="chain-module-head">
           <span class="chain-module-num">0${i + 1}</span>
+          <span class="chain-status-icon" data-icon>○</span>
           <span class="chain-module-label">${stage.label}</span>
+          <span class="chain-status-suffix" data-suffix hidden>(Processing…)</span>
         </div>
         <div class="chain-meter"><div class="chain-meter-fill"></div></div>
         <div class="chain-module-desc">${stage.desc}</div>
-      </div>`
+      </div>`,
     )
     .join("");
 }
@@ -130,13 +133,13 @@ function bindEvents() {
     el.dropzone.addEventListener(evt, (e) => {
       e.preventDefault();
       el.dropzone.classList.add("dragover");
-    })
+    }),
   );
   ["dragleave", "drop"].forEach((evt) =>
     el.dropzone.addEventListener(evt, (e) => {
       e.preventDefault();
       el.dropzone.classList.remove("dragover");
-    })
+    }),
   );
   el.dropzone.addEventListener("drop", (e) => {
     const file = e.dataTransfer.files[0];
@@ -173,7 +176,8 @@ async function handleCheck() {
   state.sourceType = "url";
   state.selectedFile = null;
   el.fileInput.value = "";
-  el.dropzoneText.textContent = "Drop a video or audio file, or click to browse";
+  el.dropzoneText.textContent =
+    "Drop a video or audio file, or click to browse";
 
   el.checkBtn.disabled = true;
   el.checkBtn.textContent = "Checking…";
@@ -197,6 +201,12 @@ async function handleCheck() {
         meta: formatDuration(data.duration),
         thumb: data.thumbnail,
       });
+
+      // Auto-start only when this is a genuinely new URL — re-checking
+      // the same link again (misclick, double Enter) never re-triggers it.
+      if (url !== state.lastStartedUrl) {
+        startJob();
+      }
     }
   } catch (err) {
     showFormError("Couldn't reach the server. Is it running?");
@@ -229,6 +239,9 @@ function showPreview({ title, meta, thumb }) {
   if (thumb) {
     el.previewThumb.src = thumb;
     el.previewThumb.style.display = "block";
+    el.previewThumb.onerror = () => {
+      el.previewThumb.style.display = "none";
+    };
   } else {
     el.previewThumb.style.display = "none";
   }
@@ -240,6 +253,20 @@ function updateAnalyzeState() {
     (state.sourceType === "url" && state.validated) ||
     (state.sourceType === "upload" && state.selectedFile);
   el.analyzeBtn.disabled = !ready;
+}
+
+function setFormBusy(busy) {
+  el.urlInput.disabled = busy;
+  el.checkBtn.disabled = busy;
+  el.fileInput.disabled = busy;
+  el.dropzone.style.pointerEvents = busy ? "none" : "";
+  el.dropzone.style.opacity = busy ? "0.5" : "";
+  if (busy) {
+    el.analyzeBtn.disabled = true;
+  } else {
+    el.analyzeBtn.textContent = "Analyze";
+    updateAnalyzeState();
+  }
 }
 
 function showFormError(msg) {
@@ -269,15 +296,35 @@ async function startJob() {
     const res = await fetch("/api/jobs", { method: "POST", body: formData });
     if (!res.ok) {
       const err = await res.json();
+      if (res.status === 409) {
+        throw new Error(
+          "Still working on the last video — wait for it to finish first.",
+        );
+      }
       throw new Error(err.detail || "Couldn't start processing");
     }
     const { job_id } = await res.json();
     state.jobId = job_id;
+    if (state.sourceType === "url") {
+      state.lastStartedUrl = el.urlInput.value.trim();
+    }
+    // Show the real, known starting state (all stages pending) immediately,
+    // rather than waiting for the first poll response.
+    renderChain({
+      stages: Object.fromEntries(
+        state.stageDefs.map((s) => [s.key, "pending"]),
+      ),
+      current_stage: null,
+      status: "running",
+    });
 
+    el.chatLog.querySelectorAll(".chat-bubble").forEach((b) => b.remove());
+    el.chatEmpty.hidden = false;
+    
     el.signalChain.hidden = false;
-    el.signalChain.scrollIntoView({ behavior: "smooth", block: "start" });
     setStatusChip("processing", "Processing");
-
+    setFormBusy(true);
+    el.analyzeBtn.textContent = "Processing…";
     pollJob();
   } catch (err) {
     showFormError(err.message);
@@ -297,10 +344,12 @@ function pollJob() {
       if (job.status === "completed") {
         clearInterval(state.pollTimer);
         setStatusChip("completed", "Ready");
+        setFormBusy(false);
         showResults(job);
       } else if (job.status === "failed") {
         clearInterval(state.pollTimer);
         setStatusChip("failed", "Failed");
+        setFormBusy(false);
         showError(job.error || "Processing failed.");
       }
     } catch (err) {
@@ -314,14 +363,26 @@ function renderChain(job) {
     const moduleEl = el.chainTrack.querySelector(`[data-key="${stage.key}"]`);
     const status = job.stages[stage.key] || "pending";
     moduleEl.dataset.status = status;
+
+    const icon = moduleEl.querySelector("[data-icon]");
+    const suffix = moduleEl.querySelector("[data-suffix]");
+    icon.textContent =
+      status === "done"
+        ? "✓"
+        : status === "running"
+          ? "→"
+          : status === "error"
+            ? "✕"
+            : "○";
+    suffix.hidden = status !== "running";
   });
 
   const active = state.stageDefs.find((s) => s.key === job.current_stage);
   el.chainSubtext.textContent = active
     ? active.desc
     : job.status === "completed"
-    ? "Done — every stage checks out."
-    : "Six passes over the audio, each one built for a reason.";
+      ? "Every stage completed successfully."
+      : "Six passes over the audio, each one built for a reason.";
 }
 
 function showError(message) {
@@ -341,7 +402,6 @@ function setStatusChip(state_, text) {
 function showResults(job) {
   state.results = job.results;
   el.resultsSection.hidden = false;
-  el.resultsSection.scrollIntoView({ behavior: "smooth", block: "start" });
 
   const meta = job.results.metadata || {};
   el.resultTitle.textContent = meta.title || "Untitled";
@@ -395,7 +455,9 @@ function seekTo(timeLabel) {
 
 function parseTimecode(label) {
   const parts = label.split(":").map(Number);
-  return parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return parts.length === 2
+    ? parts[0] * 60 + parts[1]
+    : parts[0] * 3600 + parts[1] * 60 + parts[2];
 }
 
 function renderOverview(summary) {
@@ -412,7 +474,7 @@ function renderChapters(topics) {
       <li data-time="${t.start_time}">
         <span class="time-badge">${t.start_time}</span>
         <span class="chapter-topic">${escapeHtml(t.topic)}</span>
-      </li>`
+      </li>`,
     )
     .join("");
 
@@ -426,11 +488,17 @@ function renderTranscript(segments) {
     .map(
       (s) => `
       <li data-text="${escapeHtml(s.text).toLowerCase()}">
-        <span class="time-badge">${s.start_time}</span>
+        <span class="time-badge" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>
         <span class="transcript-text">${escapeHtml(s.text)}</span>
-      </li>`
+      </li>`,
     )
     .join("");
+  el.transcriptList.querySelectorAll(".time-badge").forEach((badge) => {
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      seekTo(badge.dataset.time);
+    });
+  });
 }
 
 function filterTranscript() {
@@ -446,8 +514,12 @@ function filterTranscript() {
 // ----------------------------------------------------------------------------
 
 function switchTab(name) {
-  el.tabs.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  document.querySelectorAll(".tab-panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
+  el.tabs
+    .querySelectorAll(".tab")
+    .forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  document
+    .querySelectorAll(".tab-panel")
+    .forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
 }
 
 // ----------------------------------------------------------------------------
@@ -502,7 +574,10 @@ function appendBubble(className, text) {
 function renderSourceChips(sources) {
   if (!sources || !sources.length) return "";
   const chips = sources
-    .map((s) => `<span class="source-chip" data-time="${s.start_time}">${s.start_time}</span>`)
+    .map(
+      (s) =>
+        `<span class="source-chip" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>`,
+    )
     .join("");
   return `<div class="chat-sources">${chips}</div>`;
 }

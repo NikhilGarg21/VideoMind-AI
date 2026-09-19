@@ -94,14 +94,14 @@ Partial summaries:
 """
 
     qa_prompt = """
-Answer the question using ONLY the transcript excerpts below. If the
-excerpts don't contain enough information to answer, say so clearly
-rather than guessing.
+Answer using ONLY the transcript excerpts below.
+If they don't contain enough information, say so instead of guessing.
 
-Transcript excerpts:
+Transcript:
 {context}
 
 Question: {question}
 
-Answer concisely, in 2-4 sentences.
+Answer in a clear, well-structured format appropriate to the question.
+Keep the answer concise and within 10 lines.
 """

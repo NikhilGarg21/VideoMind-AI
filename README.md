@@ -1,375 +1,755 @@
-# VideoMind AI🎥
+# 🎥 VideoMind
 
-VideoMind is a video intelligence pipeline that transforms video content into structured, timestamp-aware information.
+> **Understand any video without watching it.**
 
-The project processes a video from audio extraction and transcription to timestamped text chunks and semantic topic generation. These artifacts are designed to be reused by downstream components such as video summarization and question answering.
+VideoMind is an AI-powered video understanding and question-answering system that transforms long videos into searchable, grounded knowledge.
 
-## 🚀 Pipeline
-
-```text
-Video
-  │
-  ▼
-Audio Ingestion
-  │
-  ├── Audio File
-  ├── Audio Chunks
-  └── Video Metadata
-  │
-  ▼
-Audio Transcription
-  │
-  └── Timestamped Transcript
-  │
-  ▼
-Text Processing
-  │
-  └── Timestamped Text Chunks
-  │
-  ▼
-Timestamp Generation
-  │
-  └── Semantic Topics + Timeline
-  │
-  ├───────────────┐
-  ▼               ▼
-Summary          Q&A / RAG
-```
-
-## ✨ Current Features
-
-### 1. Audio Ingestion
-
-* Validates and downloads audio from a video URL using `yt-dlp`
-* Extracts audio as MP3
-* Splits audio into configurable chunks using FFmpeg
-* Calculates chunk durations
-* Extracts useful video metadata
-* Stores metadata as a structured JSON artifact
-
-### 2. Audio Transcription
-
-* Uses OpenAI Whisper for transcription
-* Processes audio chunks independently
-* Preserves global timestamps across audio chunks
-* Produces structured transcript segments
-* Stores transcript data as a JSON artifact
-
-Example:
-
-```json
-{
-    "id": 12,
-    "start": 45.32,
-    "end": 48.91,
-    "text": "This is an example transcript segment."
-}
-```
-
-### 3. Text Processing
-
-The timestamped transcript is converted into larger text chunks using LangChain's `RecursiveCharacterTextSplitter`.
-
-Each chunk preserves its associated timeline:
-
-```json
-{
-    "chunk_id": 1,
-    "start_time": 0.0,
-    "end_time": 233.0,
-    "text": "...",
-    "text_length": 3982,
-    "word_count": 641
-}
-```
-
-These chunks are designed to be reusable by multiple downstream components.
-
-### 4. Semantic Timestamp Generation
-
-The transcript is provided to an LLM with segment IDs.
-
-The LLM identifies meaningful semantic topics and returns segment ranges. These ranges are then converted into human-readable timestamps.
-
-Example:
-
-```json
-{
-    "topic_id": 1,
-    "topic": "Introduction to the topic",
-    "start_time": "00:00",
-    "end_time": "00:45"
-}
-```
-
-The generated topics are validated to ensure:
-
-* Segment IDs exist
-* Start and end ranges are valid
-* Topic ranges are ordered
-* Topic ranges do not overlap
-
-Small gaps between consecutive topics can also be automatically closed.
+It can process a YouTube video or uploaded audio/video file, transcribe its content using Whisper, identify meaningful timestamps, generate summaries, create semantic embeddings, and answer questions using Retrieval-Augmented Generation (RAG).
 
 ---
 
-## 🏗️ Project Structure
+## ✨ Features
+
+- 🎬 **YouTube Video Support** — Analyze videos directly from a YouTube URL.
+- 📁 **Video & Audio Upload** — Upload supported video/audio files for analysis.
+- 🎙️ **Automatic Transcription** — Converts spoken content into text using OpenAI Whisper.
+- ⏱️ **Timestamp Generation** — Preserves where important information appears in the video.
+- 📝 **Grounded Summarization** — Generates summaries based on the processed video content.
+- 🧩 **Text Chunking** — Splits transcripts into meaningful searchable chunks.
+- 🔎 **Semantic Search** — Uses sentence embeddings to retrieve relevant video sections.
+- ⚡ **FAISS Vector Search** — Provides fast similarity-based retrieval.
+- 🤖 **RAG-based Q&A** — Answers questions using retrieved video context.
+- 📍 **Source Timestamps** — Answers include timestamps pointing back to relevant parts of the video.
+- 🌐 **FastAPI Backend** — REST API for video processing and question answering.
+- 🎨 **Custom Web UI** — HTML, CSS and JavaScript frontend.
+- 📊 **DVC Pipeline** — Data processing and embedding/indexing stages are versioned with DVC.
+- 🔐 **Environment-based API Keys** — Secrets are loaded through environment variables.
+
+---
+
+## 🧠 How VideoMind Works
+
+```text
+                    ┌─────────────────────┐
+                    │   YouTube URL /     │
+                    │   Video / Audio     │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │   Audio Ingestion   │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │      Whisper        │
+                    │    Transcription    │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │   Text Processing   │
+                    │   & Chunking        │
+                    └──────────┬──────────┘
+                               │
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+          ┌─────────────────┐   ┌─────────────────┐
+          │    Timestamp    │   │    Summary      │
+          │    Generation   │   │    Generation   │
+          └─────────────────┘   └─────────────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ SentenceTransformer│
+                    │     Embeddings      │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │       FAISS         │
+                    │    Vector Index     │
+                    └──────────┬──────────┘
+                               │
+                               ▼
+              ┌────────────────────────────────┐
+              │         User Question          │
+              └────────────────┬───────────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │   Semantic Retrieval│
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │      Groq LLM       │
+                    │    Answer Generation│
+                    └──────────┬──────────┘
+                               │
+                               ▼
+                    ┌─────────────────────┐
+                    │ Answer + Timestamps │
+                    └─────────────────────┘
+````
+
+---
+
+## 🏗️ Architecture
+
+VideoMind is organized into separate components for ingestion, transcription, processing, retrieval, and question answering.
 
 ```text
 VideoMind/
 │
-├── .dvc/                  # DVC internal files
-├── artifact/              # Generated pipeline artifacts
-├── config/                # Project configuration
-├── logs/                  # Application and pipeline logs
-├── scripts/               # Pipeline/DVC-specific scripts
-├── src/                   # Core application and pipeline code
-├── tests/                 # Test cases
-├── venv311/               # Python 3.11 virtual environment
+├── app.py
 │
-├── .dockerignore
-├── .dvcignore
-├── .env                   # Environment variables
+├── src/
+│   ├── components/
+│   │   ├── audio_ingestion.py
+│   │   ├── audio_transcription.py
+│   │   ├── text_processing.py
+│   │   ├── timestamps.py
+│   │   ├── summary.py
+│   │   ├── embedding_indexer.py
+│   │   └── qa_engine.py
+│   │
+│   ├── pipeline/
+│   │   ├── video_pipeline.py
+│   │   └── qa_pipeline.py
+│   │
+│   ├── llm/
+│   │   └── llm_client.py
+│   │
+│   ├── entity/
+│   │   ├── config_entity.py
+│   │   └── artifact_entity.py
+│   │
+│   ├── utils/
+│   │   └── ...
+│   │
+│   ├── exception.py
+│   └── logger.py
+│
+├── artifact/
+│   └── embedding/
+│       ├── index.faiss
+│       └── metadata.json
+│
+├── static/
+│   ├── index.html
+│   ├── style.css
+│   └── script.js
+│
+├── scripts/
+│   └── ...
+│
+├── dvc.yaml
+├── requirements.txt
+├── .env.example
 ├── .gitignore
-├── app.py                 # Application entry point
-├── demo.py                # Demo entry point
-├── Dockerfile             # Docker configuration
-├── dvc.lock               # DVC lock file
-├── dvc.yaml               # DVC pipeline definition
-├── pyproject.toml         # Python project configuration
 ├── README.md
-├── requirements.txt       # Python dependencies
-└── setup.py               # Package configuration
+└── ...
 ```
-
-> The exact project structure may evolve as additional pipeline stages are implemented.
-
-## 🔄 Artifact-Based Architecture
-
-VideoMind follows an artifact-driven pipeline design.
-
-Each component:
-
-```text
-Input
-  ↓
-Validation
-  ↓
-Processing
-  ↓
-Artifact
-  ↓
-Next Component
-```
-
-For example:
-
-```text
-Audio Ingestion
-      ↓
-AudioIngestionArtifact
-      ↓
-Audio Transcription
-      ↓
-AudioTranscriptionArtifact
-      ↓
-Text Processing
-      ↓
-TextProcessingArtifact
-      ↓
-Timestamp Generation
-      ↓
-TimestampArtifact
-```
-
-This allows individual stages to remain independent while making their outputs available to downstream components.
-
-## 🧠 Downstream Usage
-
-The artifacts generated by the current pipeline are intentionally reusable.
-
-### Video Metadata
-
-Video metadata can be used for:
-
-* Video information
-* UI display
-* Summary context
-* Additional video-level information
-
-### Timestamped Text Chunks
-
-Timestamped chunks can be used for:
-
-* Video summarization
-* Embedding generation
-* Retrieval-Augmented Generation (RAG)
-* Question answering
-* Source attribution
-* Jump-to-timestamp functionality
-
-### Semantic Timeline
-
-Generated topics can be used to provide:
-
-* Video chapters
-* Topic navigation
-* Timeline visualization
-* Topic-based video navigation
 
 ---
 
-## 🛠️ Tech Stack
+# 🔄 Processing Pipeline
 
-* **Python**
-* **Whisper** — Audio transcription
-* **yt-dlp** — Video/audio ingestion
-* **FFmpeg** — Audio processing
-* **LangChain** — Text splitting
-* **LLM** — Semantic topic generation
-* **DVC** — Pipeline and artifact tracking
-* **JSON** — Intermediate artifact storage
+## 1. Video / Audio Ingestion
 
-## ⚙️ Setup
+VideoMind accepts:
 
-### 1. Clone the repository
+* YouTube URLs
+* Uploaded video files
+* Uploaded audio files
+
+For YouTube URLs, the application uses `yt-dlp` to retrieve the media required for processing.
+
+---
+
+## 2. Audio Transcription
+
+The extracted audio is processed using **OpenAI Whisper**.
+
+```text
+Audio
+  ↓
+Whisper
+  ↓
+Transcript + segments
+```
+
+The transcription retains segment-level timing information, allowing VideoMind to connect answers back to the original video.
+
+---
+
+## 3. Text Processing
+
+The transcript is cleaned and divided into manageable text chunks.
+
+Each chunk contains information such as:
+
+```text
+{
+    "text": "...",
+    "start_time": "...",
+    "end_time": "..."
+}
+```
+
+This allows the retrieval system to return both relevant text and its location in the video.
+
+---
+
+## 4. Timestamp Generation
+
+VideoMind preserves timestamps associated with transcript segments.
+
+This allows answers to reference the relevant portion of the source video.
+
+Example:
+
+```text
+Relevant source:
+00:07:39 - 00:10:57
+```
+
+---
+
+## 5. Summarization
+
+The processed video content can be summarized using the configured LLM.
+
+The summary is grounded in the processed video content rather than requiring the user to manually watch the entire video.
+
+---
+
+# 🔎 Embedding & Retrieval
+
+VideoMind converts text chunks into vector embeddings using **Sentence Transformers**.
+
+```text
+Text chunks
+     ↓
+Sentence Transformer
+     ↓
+Embeddings
+     ↓
+FAISS Index
+```
+
+FAISS is used for efficient similarity search over the generated embeddings.
+
+The resulting artifacts are stored as:
+
+```text
+artifact/
+└── embedding/
+    ├── index.faiss
+    └── metadata.json
+```
+
+The metadata file preserves the relationship between retrieved vectors and their original video chunks/timestamps.
+
+---
+
+# 🤖 Question Answering
+
+VideoMind uses a Retrieval-Augmented Generation architecture.
+
+When a user asks:
+
+```text
+"What value is provided to students?"
+```
+
+the system performs:
+
+```text
+Question
+   ↓
+Question Embedding
+   ↓
+FAISS Similarity Search
+   ↓
+Relevant Video Chunks
+   ↓
+Context
+   ↓
+Groq LLM
+   ↓
+Answer
+```
+
+The response contains the generated answer along with relevant timestamps.
+
+This keeps the answer grounded in the retrieved video content.
+
+---
+
+# 🧠 LLM
+
+VideoMind uses **Groq** through LangChain's Groq integration.
+
+The LLM client reads the API key from:
+
+```text
+GROQ_API_KEY
+```
+
+The key is never hardcoded into the application.
+
+Example:
+
+```python
+api_key = os.getenv("GROQ_API_KEY")
+```
+
+---
+
+# 🌐 Web Application
+
+VideoMind provides a custom frontend built with:
+
+* HTML
+* CSS
+* JavaScript
+
+The interface allows users to:
+
+1. Paste a YouTube URL
+2. Validate the URL
+3. Upload media files
+4. Start video analysis
+5. Monitor processing
+6. Ask questions
+7. View answers with timestamps
+
+The backend is implemented using **FastAPI**.
+
+---
+
+# 🚀 API
+
+The FastAPI application exposes endpoints for configuration, validation, video processing, job status, and question answering.
+
+### Main endpoints
+
+```text
+GET /
+```
+
+Serves the VideoMind frontend.
+
+```text
+GET /api/config
+```
+
+Returns frontend/application configuration.
+
+```text
+POST /api/validate
+```
+
+Validates the provided video source.
+
+```text
+POST /api/jobs
+```
+
+Creates a video-processing job.
+
+```text
+GET /api/jobs/{job_id}
+```
+
+Returns the status of a processing job.
+
+```text
+POST /api/jobs/{job_id}/ask
+```
+
+Asks a question about the processed video.
+
+```text
+GET /media/{job_id}/{filename}
+```
+
+Provides access to generated media associated with a job.
+
+Interactive API documentation is available through:
+
+```text
+/docs
+```
+
+---
+
+# 🛠️ Tech Stack
+
+| Category                       | Technology            |
+| ------------------------------ | --------------------- |
+| Language                       | Python                |
+| Backend                        | FastAPI               |
+| Frontend                       | HTML, CSS, JavaScript |
+| Video Download                 | yt-dlp                |
+| Speech-to-Text                 | OpenAI Whisper        |
+| Embeddings                     | Sentence Transformers |
+| Vector Database                | FAISS                 |
+| LLM                            | Groq                  |
+| LLM Framework                  | LangChain             |
+| Experiment/Pipeline Versioning | DVC                   |
+| API Server                     | Uvicorn               |
+| Configuration                  | Environment Variables |
+| Logging                        | Python Logging        |
+
+---
+
+# 📦 Installation
+
+## 1. Clone the repository
 
 ```bash
-git clone <repository-url>
+git clone <YOUR_GITHUB_REPOSITORY_URL>
 cd VideoMind
 ```
 
-### 2. Create a virtual environment
+---
+
+## 2. Create a virtual environment
+
+### Windows
 
 ```bash
 python -m venv venv
 ```
 
-Windows:
+Activate it:
 
 ```bash
 venv\Scripts\activate
 ```
 
-### 3. Install dependencies
+---
+
+## 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Install FFmpeg
+---
 
-FFmpeg must be installed and available in the system `PATH`.
+# 🔐 Environment Variables
 
-Verify:
-
-```bash
-ffmpeg -version
-```
-
-### 5. Configure environment variables
-
-Create a `.env` file and add the required LLM/API configuration.
+Create a `.env` file in the project root:
 
 ```env
-LLM_API_KEY=your_api_key
+GROQ_API_KEY=your_groq_api_key
 ```
 
-Use the variables required by the project's configuration classes.
+Do **not** commit `.env` to GitHub.
+
+Your `.gitignore` should contain:
+
+```gitignore
+.env
+venv/
+__pycache__/
+```
+
+For production deployment, configure `GROQ_API_KEY` through the hosting platform's environment/secrets settings.
 
 ---
 
-## ▶️ Running the Pipeline
+# ▶️ Running Locally
 
-The pipeline can be executed through the project's pipeline entry point.
+Start the FastAPI application with:
+
+```bash
+uvicorn app:app --reload
+```
+
+The application will be available at:
+
+```text
+http://127.0.0.1:8000
+```
+
+Open:
+
+```text
+http://127.0.0.1:8000
+```
+
+API documentation:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+---
+
+# 🧪 Q&A Testing
+
+After the embedding pipeline has generated the FAISS index and metadata, the Q&A pipeline can be initialized using the generated artifacts.
 
 Example:
 
-```bash
-python main.py
+```python
+from src.entity.artifact_entity import EmbeddingArtifact
+from src.pipeline.qa_pipeline import QAPipeline
+
+embedding_artifact = EmbeddingArtifact(
+    index_file_path="artifact/embedding/index.faiss",
+    metadata_file_path="artifact/embedding/metadata.json",
+)
+
+qa_pipeline = QAPipeline(embedding_artifact)
+
+result = qa_pipeline.ask(
+    "What is the main topic discussed in the video?"
+)
+
+print(result["answer"])
 ```
 
-Individual stages can also be reproduced through DVC where configured:
+Retrieved sources can also be inspected:
+
+```python
+for source in result.get("sources", []):
+    print(
+        source["start_time"],
+        "-",
+        source["end_time"]
+    )
+```
+
+---
+
+# 📊 DVC Pipeline
+
+VideoMind uses DVC to version and reproduce the data-processing pipeline.
+
+The processing stages cover the workflow up to embedding/index generation.
+
+```text
+Audio Ingestion
+       ↓
+Audio Transcription
+       ↓
+Text Processing
+       ↓
+Timestamp Generation
+       ↓
+Summary Generation
+       ↓
+Embedding / FAISS Indexing
+```
+
+The interactive question-answering stage is intentionally kept outside the DVC pipeline because Q&A is an inference loop driven by user questions.
+
+Run the pipeline with:
 
 ```bash
 dvc repro
 ```
 
-To reproduce a specific stage:
-
-```bash
-dvc repro <stage_name>
-```
-
 ---
 
-## 📦 Artifacts
+# 💾 Generated Artifacts
 
-The pipeline generates artifacts containing intermediate and final outputs.
-
-Typical outputs include:
+The embedding stage produces:
 
 ```text
 artifact/
-│
-├── audio/
-├── audio_chunks/
-├── transcript/
-├── text_chunks/
-├── timestamps/
-└── ...
+└── embedding/
+    ├── index.faiss
+    └── metadata.json
 ```
 
-Artifacts allow each stage to pass structured information to the next stage without tightly coupling the implementation.
+### `index.faiss`
+
+Stores the vector index used for similarity search.
+
+### `metadata.json`
+
+Stores the processed chunks and their associated metadata, including timestamp information used to identify relevant sections of the video.
 
 ---
 
-## 🔮 Roadmap
+# 🧩 Project Components
 
-### Completed
+## `AudioIngestion`
 
-* [x] Video/audio ingestion
-* [x] Audio chunking
-* [x] Video metadata extraction
-* [x] Whisper transcription
-* [x] Global timestamp preservation
-* [x] Timestamped text chunk creation
-* [x] Semantic topic generation
-* [x] Topic/timestamp validation
-* [x] DVC pipeline integration
-* [x] Video summarization using timestamped text chunks
-* [x] Chunk-level summaries
-* [x] Overall video summary
+Handles the input media and prepares audio chunks for transcription.
 
-### Upcoming
+## `AudioTranscription`
 
-* [ ] Embedding generation
-* [ ] Vector database
-* [ ] Retrieval-Augmented Generation
-* [ ] Video question answering
-* [ ] Answers with source chunks and timestamps
-* [ ] End-user interface
-* [ ] Testing and CI/CD
-* [ ] Containerization and deployment
+Uses Whisper to convert audio into timestamped text segments.
 
-## 🎯 Goal
+## `TextProcessing`
 
-The goal of VideoMind is to build a system that can understand long-form video content and make it easier to **navigate, summarize, search, and ask questions about video content**.
+Cleans and structures the transcript into searchable chunks.
 
-Rather than treating each pipeline stage as an isolated feature, VideoMind builds reusable artifacts that can be consumed by multiple downstream components.
+## `TimestampGenerator`
+
+Maintains timestamp information associated with processed content.
+
+## `SummaryGenerator`
+
+Generates a grounded summary from the processed video content.
+
+## `EmbeddingIndexer`
+
+Creates sentence embeddings and builds the FAISS vector index.
+
+## `QAEngine`
+
+Retrieves relevant chunks and generates answers using the configured LLM.
+
+## `VideoPipeline`
+
+Coordinates the complete video-processing workflow.
+
+## `QAPipeline`
+
+Provides the interface for interactive question answering.
+
+---
+
+# 🔐 Security
+
+API credentials should never be committed to the repository.
+
+Use environment variables:
+
+```env
+GROQ_API_KEY=...
+```
+
+Never commit:
 
 ```text
-Video
- ↓
-Understand
- ↓
-Structure
- ↓
-Summarize
- ↓
-Search
- ↓
-Ask Questions
+.env
+```
+
+For deployment platforms, store secrets using their environment-variable/secret-management system.
+
+---
+
+# ⚡ Performance Considerations
+
+Video processing is computationally heavier than normal API requests because it involves speech recognition and embedding generation.
+
+The major resource-intensive components are:
+
+* Whisper
+* Sentence Transformers
+* PyTorch-based dependencies
+* Video/audio processing
+
+For production deployment, these components may require more memory than a minimal web-service instance.
+
+The application therefore separates the processing pipeline from the interactive Q&A workflow conceptually, while the Q&A stage can operate on already-generated FAISS artifacts.
+
+---
+
+# 🧪 Example Workflow
+
+### Input
+
+```text
+YouTube URL
+```
+
+### Processing
+
+```text
+YouTube Video
+      ↓
+Audio Extraction
+      ↓
+Whisper Transcription
+      ↓
+Text Processing
+      ↓
+Timestamped Chunks
+      ↓
+Embeddings
+      ↓
+FAISS Index
+```
+
+### Question
+
+```text
+"What value is provided to students?"
+```
+
+### Output
+
+```text
+VideoMind retrieves the most relevant sections of the video
+and generates an answer using the retrieved context.
+
+Sources:
+00:00 - 03:57
+07:39 - 10:57
 ```
 
 ---
+
+# 🎯 Why VideoMind?
+
+Long-form videos often contain useful information buried across many minutes of content.
+
+VideoMind turns that content into a searchable knowledge source so users can:
+
+* Skip manually searching through long videos
+* Ask questions in natural language
+* Find relevant sections quickly
+* Get answers grounded in the source content
+* Jump directly to relevant timestamps
+
+Instead of watching the entire video:
+
+```text
+Watch 60 minutes
+       ↓
+Find information manually
+       ↓
+Remember timestamp
+```
+
+VideoMind provides:
+
+```text
+Ask a question
+       ↓
+Retrieve relevant context
+       ↓
+Get an answer
+       ↓
+Get the timestamp
+```
+
+---
+
+# 🔮 Future Improvements
+
+* [ ] Persistent job storage
+* [ ] Background task queue for long-running video processing
+* [ ] Improved model/resource management
+* [ ] Multiple video support
+* [ ] Conversation history
+* [ ] Streaming LLM responses
+* [ ] More advanced transcript search
+* [ ] Authentication and user accounts
+* [ ] Cloud-based artifact storage
+* [ ] Production deployment with dedicated processing workers
+* [ ] GPU-based transcription for faster processing
+
+---
+

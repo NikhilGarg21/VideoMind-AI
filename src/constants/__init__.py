@@ -13,7 +13,7 @@ AUDIO_DIR: str = "audio"
 AUDIO_CHUNKS_DIR: str = "chunks"
 AUDIO_FILE_NAME: str = "input_audio.mp3"
 VIDEO_METADATA_FILE_NAME: str = "video_data.json"
-VIDEO_URL: str = "https://www.youtube.com/watch?v=5HKaLStWNoc"
+VIDEO_URL: str = "https://www.youtube.com/shorts/-YHNCLTh1Gk"
 CHUNKS_DURATION: int = 60
 
 # --- Audio Transcription ---

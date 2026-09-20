@@ -55,7 +55,10 @@ class AudioIngestion:
                 "noplaylist": True,
                 "quiet": False,
                 "no_warnings": False,
-                "verbose": True,
+                "cookiefile": os.getenv("YOUTUBE_COOKIE_FILE", "cookies.txt"),
+                "extractor_args": {
+                    "youtube": {"player_client": ["default", "web_embedded"]}
+                },
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -63,10 +66,6 @@ class AudioIngestion:
                         "preferredquality": "192",
                     }
                 ],
-                "extractor_args": {
-                    "youtube": {"player_client": ["mweb"],},
-                    "youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"},
-                },
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

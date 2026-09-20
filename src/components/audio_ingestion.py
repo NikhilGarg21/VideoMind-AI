@@ -64,7 +64,7 @@ class AudioIngestion:
                     }
                 ],
                 "extractor_args": {
-                    "youtube": {"player_client": ["mweb"],},
+                    "youtube": {"player_client": ["android_vr"],},
                     "youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"},
                 },
             }

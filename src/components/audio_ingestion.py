@@ -53,8 +53,9 @@ class AudioIngestion:
                 "format": "ba/b",
                 "outtmpl": outtmpl_base + ".%(ext)s",
                 "noplaylist": True,
-                "quiet": True,
-                "no_warnings": True,
+                "quiet": False,
+                "no_warnings": False,
+                "verbose": True,
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",

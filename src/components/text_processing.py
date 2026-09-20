@@ -38,7 +38,7 @@ class TextProcessing:
             self.text_processing_config = text_processing_config
 
         except Exception as e:
-            raise MyException(e, sys)
+            raise MyException(e, sys) from e
 
     def load_transcript_data(self) -> dict:
         """
@@ -74,7 +74,7 @@ class TextProcessing:
             return transcript_data
 
         except Exception as e:
-            raise MyException(e, sys)
+            raise MyException(e, sys) from e
 
     def create_text_chunks(self, segments: list) -> list:
         """
@@ -167,6 +167,7 @@ class TextProcessing:
 
             if current_text.strip():
                 final_text = current_text.strip()
+
                 chunks.append(
                     {
                         "chunk_id": chunk_id,
@@ -182,10 +183,11 @@ class TextProcessing:
                 raise ValueError("No text chunks were created")
 
             logger.info(f"Created {len(chunks)} text chunks")
+
             return chunks
 
         except Exception as e:
-            raise MyException(e, sys)
+            raise MyException(e, sys) from e
 
     def save_text_chunks(self, chunks: list) -> str:
         """
@@ -202,24 +204,37 @@ class TextProcessing:
         """
         try:
             logger.info("Saving text chunks")
+
             text_chunks_dir = self.text_processing_config.text_chunks_dir
+
+            os.makedirs(
+                text_chunks_dir,
+                exist_ok=True,
+            )
 
             for chunk in chunks:
                 chunk_id = chunk["chunk_id"]
+
                 chunk_file_path = os.path.join(
                     text_chunks_dir,
                     f"chunk_{chunk_id:03d}.json",
                 )
 
-                save_json(chunk, chunk_file_path)
+                save_json(
+                    chunk,
+                    chunk_file_path,
+                )
 
             logger.info("Text chunks saved successfully")
+
             return text_chunks_dir
 
         except Exception as e:
-            raise MyException(e, sys)
+            raise MyException(e, sys) from e
 
-    def initiate_text_processing(self) -> TextProcessingArtifact:
+    def initiate_text_processing(
+        self,
+    ) -> TextProcessingArtifact:
         """
         Execute the complete text processing stage: load the transcript,
         chunk it, and save the chunks to disk.
@@ -235,16 +250,20 @@ class TextProcessing:
             logger.info("Starting text processing")
 
             transcript_data = self.load_transcript_data()
+
             segments = transcript_data["segments"]
 
             text_chunks = self.create_text_chunks(segments=segments)
+
             text_chunks_dir = self.save_text_chunks(chunks=text_chunks)
+
             text_processing_artifact = TextProcessingArtifact(
                 text_chunks_dir=text_chunks_dir
             )
 
             logger.info("Text processing artifact created successfully")
+
             return text_processing_artifact
 
         except Exception as e:
-            raise MyException(e, sys)
+            raise MyException(e, sys) from e

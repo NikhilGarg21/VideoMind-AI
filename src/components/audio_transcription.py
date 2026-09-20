@@ -14,6 +14,16 @@ from src.exception import MyException
 from src.logger import logger
 from src.utils.main_utils import save_json
 
+# Audio containers/formats that can be produced by ingestion.
+SUPPORTED_AUDIO_EXTENSIONS = {
+    ".mp3",
+    ".webm",
+    ".m4a",
+    ".wav",
+    ".ogg",
+    ".flac",
+}
+
 
 class AudioTranscription:
     """
@@ -40,9 +50,13 @@ class AudioTranscription:
                 sys,
             ) from e
 
-    def validate_audio_chunks(self) -> list:
+    def validate_audio_chunks(self) -> list[str]:
         """
-        Validate the audio chunks directory and return sorted chunk paths.
+        Validate the audio chunks directory and return
+        sorted chunk paths.
+
+        The ingestion stage may now produce WebM, M4A,
+        MP3, or another supported audio container.
         """
         try:
             logger.info("Validating audio chunks")
@@ -61,14 +75,30 @@ class AudioTranscription:
                         file_name,
                     )
                     for file_name in os.listdir(audio_chunks_dir)
-                    if file_name.endswith(".mp3")
+                    if (
+                        os.path.isfile(
+                            os.path.join(
+                                audio_chunks_dir,
+                                file_name,
+                            )
+                        )
+                        and os.path.splitext(file_name)[1].lower()
+                        in SUPPORTED_AUDIO_EXTENSIONS
+                    )
                 ]
             )
 
             if not audio_chunks:
-                raise ValueError("No audio chunks found")
+                raise ValueError("No supported audio chunks found")
 
-            logger.info(f"Found {len(audio_chunks)} " "audio chunks")
+            logger.info(f"Found {len(audio_chunks)} audio chunks")
+
+            logger.info(
+                "Audio chunk formats: "
+                + ", ".join(
+                    sorted({os.path.splitext(path)[1].lower() for path in audio_chunks})
+                )
+            )
 
             return audio_chunks
 
@@ -110,8 +140,9 @@ class AudioTranscription:
         """
         Transcribe a single audio chunk via Groq.
 
-        The file object is passed directly to Groq so the complete
-        audio file is not loaded into memory with file.read().
+        The file object is passed directly to Groq so the
+        complete audio file is not loaded into memory with
+        file.read().
         """
         max_retries = self.audio_transcription_config.max_retries
 
@@ -146,12 +177,13 @@ class AudioTranscription:
                 segments = response.segments or []
 
                 logger.info(
-                    f"Transcription completed for " f"{os.path.basename(audio_chunk)}"
+                    "Transcription completed for " f"{os.path.basename(audio_chunk)}"
                 )
 
                 return segments
 
             except Exception as e:
+
                 last_error = e
 
                 logger.warning(
@@ -163,6 +195,7 @@ class AudioTranscription:
                 )
 
                 if attempt < max_retries:
+
                     wait_time = retry_delay * attempt
 
                     logger.info(f"Retrying in " f"{wait_time} seconds...")
@@ -176,7 +209,7 @@ class AudioTranscription:
 
     def transcribe_audio_chunks(
         self,
-        audio_chunks: list,
+        audio_chunks: list[str],
         client: Groq,
     ) -> list:
         """
@@ -188,18 +221,27 @@ class AudioTranscription:
 
             chunk_durations = self.audio_ingestion_artifact.chunk_durations
 
+            if len(audio_chunks) != len(chunk_durations):
+                raise ValueError(
+                    "Number of audio chunks does not " "match number of chunk durations"
+                )
+
             all_segments = []
             cumulative_offset = 0.0
 
-            for chunk_index, (
-                audio_chunk,
-                chunk_duration,
+            for (
+                chunk_index,
+                (
+                    audio_chunk,
+                    chunk_duration,
+                ),
             ) in enumerate(
                 zip(
                     audio_chunks,
                     chunk_durations,
                 )
             ):
+
                 logger.info(
                     f"Transcribing audio chunk "
                     f"{chunk_index + 1}/"
@@ -227,6 +269,10 @@ class AudioTranscription:
                     }
 
                     all_segments.append(segment_data)
+
+                # Release the current chunk's response
+                # before moving to the next chunk.
+                raw_segments = None
 
                 cumulative_offset += chunk_duration
 
@@ -270,21 +316,24 @@ class AudioTranscription:
 
     def cleanup_audio_chunks(self) -> None:
         """
-        Delete all audio chunks after successful transcription.
+        Delete all audio chunks after successful
+        transcript persistence.
 
-        This is intentionally called only after the transcript has
-        been successfully saved.
+        Chunks intentionally remain if transcription
+        fails so the job can be retried.
         """
         try:
             chunks_dir = self.audio_ingestion_artifact.audio_chunks_dir
 
             if os.path.exists(chunks_dir):
+
                 shutil.rmtree(chunks_dir)
 
-                logger.info(f"Deleted audio chunks directory: " f"{chunks_dir}")
+                logger.info("Deleted audio chunks directory: " f"{chunks_dir}")
 
         except Exception as e:
-            logger.warning(f"Could not delete audio chunks: " f"{e}")
+
+            logger.warning("Could not delete audio chunks: " f"{e}")
 
     def initiate_audio_transcription(
         self,
@@ -298,7 +347,8 @@ class AudioTranscription:
             3. Save transcript.
             4. Delete chunks.
 
-        If transcription fails, chunks remain available for retry.
+        If transcription fails, chunks remain available
+        for retry.
         """
         client = None
 
@@ -320,14 +370,15 @@ class AudioTranscription:
 
             transcript_file_path = self.audio_transcription_config.transcript_file_path
 
-            # Save transcript first.
+            # Persist transcript first.
             save_json(
                 transcript_data,
                 transcript_file_path,
             )
 
-            # Only after the transcript is safely persisted,
-            # delete the source audio chunks.
+            logger.info("Transcript saved successfully")
+
+            # Only now is deletion safe.
             self.cleanup_audio_chunks()
 
             audio_transcription_artifact = AudioTranscriptionArtifact(
@@ -339,17 +390,23 @@ class AudioTranscription:
             return audio_transcription_artifact
 
         except Exception as e:
+
             raise MyException(
                 e,
                 sys,
             ) from e
 
         finally:
+
             if client is not None:
+
                 try:
                     client.close()
 
                     logger.info("Groq transcription client closed")
 
                 except Exception as e:
+
                     logger.warning(f"Failed to close Groq client: {e}")
+
+            client = None

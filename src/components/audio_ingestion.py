@@ -55,10 +55,7 @@ class AudioIngestion:
                 "noplaylist": True,
                 "quiet": False,
                 "no_warnings": False,
-                "cookiefile": os.getenv("YOUTUBE_COOKIE_FILE", "cookies.txt"),
-                "extractor_args": {
-                    "youtube": {"player_client": ["default", "web_embedded"]}
-                },
+                "verbose": True,
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",
@@ -66,6 +63,10 @@ class AudioIngestion:
                         "preferredquality": "192",
                     }
                 ],
+                "extractor_args": {
+                    "youtube": {"player_client": ["android_vr"],},
+                    "youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"},
+                },
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:

@@ -151,3 +151,4 @@ Open `http://localhost:8000`.
 ## Related
 
 - **VideoMind-RAG-Pipeline** — the DVC-driven experimentation repo this deployment's pipeline logic is developed in
+-https://github.com/NikhilGarg21/VideoMind-RAG-Pipeline-Local-Experiment

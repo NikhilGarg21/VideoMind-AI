@@ -15,7 +15,7 @@ real datastore — the pipeline calls themselves don't need to change.
 """
 
 from __future__ import annotations
-
+import sys
 import os
 import shutil
 import subprocess
@@ -106,6 +106,7 @@ def new_job(source_type: str, source_label: str) -> str:
             "current_stage": None,
             "stages": {stage["key"]: "pending" for stage in STAGE_DEFS},
             "error": None,
+            "warning": None,
             "video_id": None,
             "media_url": None,
             "results": None,
@@ -162,30 +163,18 @@ def public_job_view(job: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
-def get_duration_seconds(file_path: str) -> float:
+def extract_duration_from_ffmpeg_stderr(stderr: str) -> float:
     """
-    Probe a media file's duration via ffprobe.
+    Parse the source duration ffmpeg already prints to stderr during
+    conversion, instead of running a separate ffprobe call to get it.
     """
+    import re
 
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            file_path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {result.stderr}")
-
-    return float(result.stdout.strip())
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+\.\d+)", stderr)
+    if not match:
+        raise ValueError("Could not determine audio duration from ffmpeg output")
+    hours, minutes, seconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def ingest_uploaded_file(
@@ -197,20 +186,16 @@ def ingest_uploaded_file(
     Heavy pipeline-related imports are intentionally performed here,
     only when an uploaded video is actually processed.
     """
-
-    # Lazy import
     from src.components.audio_ingestion import AudioIngestion
     from src.entity.artifact_entity import AudioIngestionArtifact
 
     config = pipeline.audio_ingestion_config
-
     audio_ingestion = AudioIngestion(audio_ingestion_config=config)
 
     output_dir = os.path.dirname(config.audio_path)
-
     os.makedirs(output_dir, exist_ok=True)
 
-    subprocess.run(
+    result = subprocess.run(
         [
             "ffmpeg",
             "-y",
@@ -225,16 +210,14 @@ def ingest_uploaded_file(
         ],
         capture_output=True,
         text=True,
-        check=True,
     )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
 
-    duration = get_duration_seconds(config.audio_path)
-
+    duration = extract_duration_from_ffmpeg_stderr(result.stderr)
     audio_chunks_dir = audio_ingestion.create_audio_chunks(config.audio_path)
-
     chunk_durations = audio_ingestion.compute_chunk_durations(
-        duration,
-        config.chunk_duration,
+        duration, config.chunk_duration
     )
 
     video_metadata = {
@@ -378,69 +361,34 @@ def run_job(
             # CHAPTERS + SUMMARY
             # --------------------------------------------------------------
 
-            set_stage(
-                job_id,
-                "timestamp",
-                "running",
-            )
+            set_stage(job_id, "timestamp", "running")
+            set_stage(job_id, "summary", "running")
 
-            set_stage(
-                job_id,
-                "summary",
-                "running",
-            )
+            timestamp_artifact = None
+            summary_artifact = None
+            stage_errors = {}
 
             with ThreadPoolExecutor(max_workers=2) as executor:
+                future_timestamp = executor.submit(pipeline.start_timestamp_generation, transcription_artifact)
+                future_summary = executor.submit(pipeline.start_summary_generation, transcription_artifact)
 
-                future_timestamp = executor.submit(
-                    pipeline.start_timestamp_generation,
-                    transcription_artifact,
-                )
+                for future, key in ((future_timestamp, "timestamp"), (future_summary, "summary")):
+                    try:
+                        result = future.result()
+                        if key == "timestamp":
+                            timestamp_artifact = result
+                        else:
+                            summary_artifact = result
+                        set_stage(job_id, key, "done")
+                    except Exception as e:
+                        stage_errors[key] = str(e)
+                        set_stage(job_id, key, "error")
 
-                future_summary = executor.submit(
-                    pipeline.start_summary_generation,
-                    transcription_artifact,
-                )
-
-                try:
-
-                    timestamp_artifact = future_timestamp.result()
-
-                    set_stage(
-                        job_id,
-                        "timestamp",
-                        "done",
+                if stage_errors:
+                    logger.warning(
+                        "Non-critical stage failures: "
+                        + ", ".join(stage_errors.keys())
                     )
-
-                except Exception as e:
-
-                    set_failed(
-                        job_id,
-                        "timestamp",
-                        str(e),
-                    )
-
-                    raise
-
-                try:
-
-                    summary_artifact = future_summary.result()
-
-                    set_stage(
-                        job_id,
-                        "summary",
-                        "done",
-                    )
-
-                except Exception as e:
-
-                    set_failed(
-                        job_id,
-                        "summary",
-                        str(e),
-                    )
-
-                    raise
 
             # --------------------------------------------------------------
             # EMBEDDING
@@ -461,7 +409,12 @@ def run_job(
                 "embedding",
                 "done",
             )
-
+            if stage_errors:
+                with JOBS_LOCK:
+                    JOBS[job_id]["warning"] = (
+                        "Some stages failed, but the pipeline completed. "
+                        "Q&A is still available."
+                    )
             # --------------------------------------------------------------
             # QA PIPELINE
             # --------------------------------------------------------------
@@ -472,9 +425,19 @@ def run_job(
             # LOAD RESULTS
             # --------------------------------------------------------------
 
-            timestamps = load_json(timestamp_artifact.timestamp_file_path)["topics"]
+            timestamps = []
 
-            summary = load_json(summary_artifact.summary_file_path)
+            if timestamp_artifact is not None:
+                timestamps = load_json(
+                    timestamp_artifact.timestamp_file_path
+                )["topics"]
+
+            summary = {}
+
+            if summary_artifact is not None:
+                summary = load_json(
+                    summary_artifact.summary_file_path
+                )
 
             segments = load_json(transcription_artifact.transcript_file_path)[
                 "segments"
@@ -513,19 +476,21 @@ def run_job(
             logger.info(f"Job {job_id} completed successfully")
 
         except Exception as e:
-
             with JOBS_LOCK:
+                job = JOBS[job_id]
 
-                if JOBS[job_id]["status"] != "failed":
+                if job["status"] != "failed":
+                    job["status"] = "failed"
+                    job["error"] = str(e)
 
-                    JOBS[job_id]["status"] = "failed"
+                current = job.get("current_stage")
 
-                    JOBS[job_id]["error"] = str(e)
+                if current and job["stages"].get(current) == "running":
+                    job["stages"][current] = "error"
 
             logger.error(f"Job {job_id} failed: {e}")
 
         finally:
-
             with JOBS_LOCK:
                 BUSY["active"] = False
 

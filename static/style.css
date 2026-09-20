@@ -749,6 +749,55 @@ main {
   background: var(--panel);
 }
 
+/* Chapter empty state */
+.chapters-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px 20px !important;
+  margin: 4px 0;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-md);
+  background: var(--panel) !important;
+  cursor: default !important;
+}
+
+.chapters-empty:hover {
+  background: var(--panel) !important;
+}
+
+.chapters-empty-icon {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  background: var(--amber-dim);
+  color: var(--amber);
+  font-size: 14px;
+}
+
+.chapters-empty-content {
+  min-width: 0;
+}
+
+.chapters-empty-title {
+  margin-bottom: 4px;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chapters-empty-text {
+  max-width: 520px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .transcript-list li {
   cursor: default;
 }

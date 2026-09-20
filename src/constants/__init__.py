@@ -45,7 +45,7 @@ MAX_CHARS_PER_SUMMARY_BATCH: int = 8000
 EMBEDDING_DIR: str = "embedding"
 EMBEDDING_INDEX_FILE_NAME: str = "index.faiss"
 EMBEDDING_METADATA_FILE_NAME: str = "metadata.json"
-EMBEDDING_MODEL_NAME: str = "all-MiniLM-L6-v2"
+EMBEDDING_MODEL_NAME: str = "BAAI/bge-small-en-v1.5"
 QA_TOP_K: int = 2
 
 # --- Application ---

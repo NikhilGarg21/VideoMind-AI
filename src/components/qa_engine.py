@@ -1,9 +1,9 @@
 import sys
 import faiss
-from sentence_transformers import SentenceTransformer
-
 from src.entity.config_entity import EmbeddingConfig
 from src.entity.artifact_entity import EmbeddingArtifact
+import numpy as np
+from src.utils.hf_embeddings import embed_texts
 from src.exception import MyException
 from src.logger import logger
 from src.prompts import Prompt
@@ -36,8 +36,6 @@ class QAEngine:
 
             self.embedding_config = embedding_config
             self.llm = llm
-
-            self.model = SentenceTransformer(embedding_config.model_name)
             self.index = faiss.read_index(embedding_artifact.index_file_path)
             self.chunks = load_json(embedding_artifact.metadata_file_path)["chunks"]
 
@@ -62,9 +60,7 @@ class QAEngine:
             MyException: If retrieval fails.
         """
         try:
-            query_vector = self.model.encode(
-                [question], convert_to_numpy=True
-            ).astype("float32")
+            query_vector = np.array(embed_texts([question], self.embedding_config.model_name), dtype="float32")
 
             _distances, indices = self.index.search(
                 query_vector, self.embedding_config.top_k

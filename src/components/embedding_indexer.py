@@ -2,8 +2,8 @@ import os
 import sys
 import json
 import faiss
-from sentence_transformers import SentenceTransformer
-
+from src.utils.hf_embeddings import embed_texts
+import numpy as np
 from src.entity.config_entity import EmbeddingConfig
 from src.entity.artifact_entity import (
     TextProcessingArtifact,
@@ -94,14 +94,9 @@ class EmbeddingIndexer:
         """
         try:
             logger.info(f"Loading embedding model: {self.embedding_config.model_name}")
-            model = SentenceTransformer(self.embedding_config.model_name)
-
             logger.info("Embedding text chunks")
             texts = [chunk["text"] for chunk in chunks]
-            embeddings = model.encode(
-                texts, convert_to_numpy=True, show_progress_bar=False
-            ).astype("float32")
-
+            embeddings = np.array(embed_texts(texts, self.embedding_config.model_name), dtype="float32")
             index = faiss.IndexFlatL2(embeddings.shape[1])
             index.add(embeddings)
             logger.info(f"Built FAISS index with {index.ntotal} vectors")

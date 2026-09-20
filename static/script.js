@@ -282,6 +282,7 @@ function clearError() {
 // ----------------------------------------------------------------------------
 
 async function startJob() {
+  el.errorBanner.hidden = true;
   el.analyzeBtn.disabled = true;
   el.analyzeBtn.textContent = "Starting…";
 
@@ -314,13 +315,13 @@ async function startJob() {
       stages: Object.fromEntries(
         state.stageDefs.map((s) => [s.key, "pending"]),
       ),
-      current_stage: null,
+      current_stage: "ingestion",
       status: "running",
     });
 
     el.chatLog.querySelectorAll(".chat-bubble").forEach((b) => b.remove());
     el.chatEmpty.hidden = false;
-    
+
     el.signalChain.hidden = false;
     setStatusChip("processing", "Processing");
     setFormBusy(true);
@@ -468,7 +469,23 @@ function renderOverview(summary) {
 }
 
 function renderChapters(topics) {
-  el.chaptersList.innerHTML = (topics || [])
+  if (!topics || topics.length === 0) {
+    el.chaptersList.innerHTML = `
+      <li class="chapters-empty">
+        <div class="chapters-empty-icon">✦</div>
+        <div class="chapters-empty-content">
+          <div class="chapters-empty-title">Chapters unavailable</div>
+          <div class="chapters-empty-text">
+            We couldn't generate chapters for this video,
+            but you can still use the transcript, summary, and Q&A.
+          </div>
+        </div>
+      </li>
+    `;
+    return;
+  }
+
+  el.chaptersList.innerHTML = topics
     .map(
       (t) => `
       <li data-time="${t.start_time}">

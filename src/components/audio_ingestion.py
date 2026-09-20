@@ -50,7 +50,7 @@ class AudioIngestion:
             outtmpl_base = os.path.splitext(self.audio_ingestion_config.audio_path)[0]
 
             ydl_opts = {
-                "format": "bestaudio/best",
+                "format": "ba/b",
                 "outtmpl": outtmpl_base + ".%(ext)s",
                 "noplaylist": True,
                 "quiet": True,
@@ -62,6 +62,9 @@ class AudioIngestion:
                         "preferredquality": "192",
                     }
                 ],
+                "extractor_args": {
+                    "youtubepot-bgutilhttp": {"base_url": "http://127.0.0.1:4416"},
+                },
             }
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -138,7 +141,9 @@ class AudioIngestion:
         except Exception as e:
             raise MyException(e, sys)
 
-    def compute_chunk_durations(self, total_duration: float, chunk_duration: int) -> list:
+    def compute_chunk_durations(
+        self, total_duration: float, chunk_duration: int
+    ) -> list:
         """
         Deterministically compute each chunk's duration from the video's
         total length and the fixed segment size used by FFmpeg.

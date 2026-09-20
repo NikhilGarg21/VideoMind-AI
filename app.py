@@ -1,1046 +1,979 @@
+"""
+VideoMind API — FastAPI backend for the video understanding pipeline.
+
+Lightweight deployment version:
+- Heavy pipeline imports remain lazy.
+- Only one finished/failed job is retained in memory.
+- Uploaded source files are deleted after successful conversion.
+- QAPipeline remains loaded only during Q&A requests.
+- Timestamp and summary stages run sequentially to reduce peak memory.
+"""
+
+from __future__ import annotations
+
 import gc
 import os
 import shutil
-import sys
+import subprocess
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from typing import Optional
+
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+)
+
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+)
+
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import yt_dlp
 
-from src.exception import MyException
+
 from src.logger import logger
 
-load_dotenv()
-
-app = FastAPI(title="VideoMind")
-
-app.mount("/static", StaticFiles(directory="static"), name="static")
+app = FastAPI(title="VideoMind API")
 
 
-# ============================================================
-# GLOBAL STATE
-# ============================================================
+# --------------------------------------------------------------------------
+# Paths
+# --------------------------------------------------------------------------
 
-JOBS = {}
-ACTIVE_JOB_ID = None
+STATIC_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "static",
+)
 
-JOB_LOCK = threading.Lock()
-
-# Keep only the currently active job in memory.
-MAX_COMPLETED_JOBS = 1
-
-
-# ============================================================
-# REQUEST MODELS
-# ============================================================
+UPLOAD_DIR = os.path.join(
+    "artifact",
+    "uploads",
+)
 
 
-class URLRequest(BaseModel):
+app.mount(
+    "/static",
+    StaticFiles(directory=STATIC_DIR),
+    name="static",
+)
+
+
+# --------------------------------------------------------------------------
+# Pipeline stage definitions
+# --------------------------------------------------------------------------
+
+STAGE_DEFS = [
+    {
+        "key": "ingestion",
+        "label": "Ingest",
+        "desc": "Pulling the audio track from the source.",
+    },
+    {
+        "key": "transcription",
+        "label": "Transcribe",
+        "desc": "Listening to the audio, word by word, with exact timing.",
+    },
+    {
+        "key": "text_processing",
+        "label": "Structure",
+        "desc": "Splitting the transcript into meaning-sized pieces.",
+    },
+    {
+        "key": "timestamp",
+        "label": "Chapters",
+        "desc": "Finding where the topic actually changes — not just every N minutes.",
+    },
+    {
+        "key": "summary",
+        "label": "Summary",
+        "desc": "Writing the TL;DR and checking its numbers against the transcript.",
+    },
+    {
+        "key": "embedding",
+        "label": "Index",
+        "desc": "Making every moment searchable, so you can ask it anything.",
+    },
+]
+
+
+# --------------------------------------------------------------------------
+# In-memory job store
+# --------------------------------------------------------------------------
+
+JOBS: dict = {}
+
+JOBS_LOCK = threading.Lock()
+PIPELINE_LOCK = threading.Lock()
+QA_LOCK = threading.Lock()
+
+BUSY = {
+    "active": False,
+}
+
+# Keep only one completed/failed job in memory.
+MAX_FINISHED_JOBS = 1
+
+
+def new_job(
+    source_type: str,
+    source_label: str,
+) -> str:
+    """Create and register a fresh job entry."""
+
+    job_id = uuid.uuid4().hex[:12]
+
+    with JOBS_LOCK:
+        # Prune old jobs before creating new ones to save memory
+        prune_finished_jobs_locked()
+        JOBS[job_id] = {
+            "id": job_id,
+            "source_type": source_type,
+            "source_label": source_label,
+            "status": "queued",
+            "current_stage": None,
+            "stages": {stage["key"]: "pending" for stage in STAGE_DEFS},
+            "error": None,
+            "warning": None,
+            "video_id": None,
+            "media_url": None,
+            "results": None,
+            "qa_pipeline": None,
+        }
+
+    return job_id
+
+
+def prune_finished_jobs_locked() -> bool:
+    """
+    Keep only the newest finished/failed job and free associated disk/memory resources.
+
+    Caller must hold JOBS_LOCK.
+    """
+
+    finished_ids = [
+        job_id
+        for job_id, job in JOBS.items()
+        if job["status"]
+        in {
+            "completed",
+            "failed",
+        }
+    ]
+
+    removed = False
+
+    while len(finished_ids) > MAX_FINISHED_JOBS:
+        old_job_id = finished_ids.pop(0)
+
+        if old_job_id in JOBS:
+            old_job = JOBS.pop(old_job_id, None)
+            if old_job:
+                # Clear references explicitly
+                old_job["qa_pipeline"] = None
+                old_job["results"] = None
+
+            # Remove job's upload directory if present to conserve disk
+            old_upload_dir = os.path.join(UPLOAD_DIR, old_job_id)
+            if os.path.exists(old_upload_dir):
+                shutil.rmtree(old_upload_dir, ignore_errors=True)
+
+            removed = True
+
+    return removed
+
+
+def set_stage(
+    job_id: str,
+    key: str,
+    status: str,
+) -> None:
+    """Update one stage's status."""
+
+    with JOBS_LOCK:
+        job = JOBS[job_id]
+        job["stages"][key] = status
+
+        if status == "running":
+            job["current_stage"] = key
+            job["status"] = "running"
+
+
+def set_failed(
+    job_id: str,
+    key: Optional[str],
+    message: str,
+) -> None:
+    """Mark a job/stage as failed."""
+
+    with JOBS_LOCK:
+        job = JOBS[job_id]
+
+        if key:
+            job["stages"][key] = "error"
+
+        job["status"] = "failed"
+        job["error"] = message
+
+    logger.error(f"Job {job_id} failed at stage {key}: {message}")
+
+
+def public_job_view(
+    job: dict,
+) -> dict:
+    """Strip internal objects before sending to the client."""
+
+    view = {key: value for key, value in job.items() if key != "qa_pipeline"}
+
+    if job.get("results"):
+        view["results"] = {
+            **job["results"],
+            "qa_ready": (job.get("qa_pipeline") is not None),
+        }
+
+    return view
+
+
+# --------------------------------------------------------------------------
+# Upload handling
+# --------------------------------------------------------------------------
+
+
+def extract_duration_from_ffmpeg_stderr(
+    stderr: str,
+) -> float:
+    """
+    Parse source duration from FFmpeg stderr.
+    """
+
+    import re
+
+    match = re.search(
+        r"Duration:\s*(\d+):(\d+):(\d+\.\d+)",
+        stderr,
+    )
+
+    if not match:
+        raise ValueError("Could not determine audio duration from ffmpeg output")
+
+    hours, minutes, seconds = match.groups()
+
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+
+def ingest_uploaded_file(
+    job_id: str,
+    saved_path: str,
+    original_filename: str,
+    pipeline,
+):
+    """
+    Convert an uploaded video/file into the internal
+    AudioIngestionArtifact representation.
+
+    The original uploaded file is deleted after
+    successful FFmpeg conversion.
+    """
+
+    from src.components.audio_ingestion import (
+        AudioIngestion,
+    )
+
+    from src.entity.artifact_entity import (
+        AudioIngestionArtifact,
+    )
+
+    from src.utils.main_utils import (
+        save_json,
+    )
+
+    config = pipeline.audio_ingestion_config
+
+    audio_ingestion = AudioIngestion(audio_ingestion_config=config)
+
+    output_dir = os.path.dirname(config.audio_path)
+
+    if output_dir:
+        os.makedirs(
+            output_dir,
+            exist_ok=True,
+        )
+
+    result = subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            saved_path,
+            "-vn",
+            "-acodec",
+            "libmp3lame",
+            "-q:a",
+            "2",
+            config.audio_path,
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg failed: {result.stderr}")
+
+    try:
+        if os.path.exists(saved_path):
+            os.remove(saved_path)
+            logger.info(f"Deleted uploaded source file: {saved_path}")
+
+    except Exception as e:
+        logger.warning(f"Could not delete uploaded source file {saved_path}: {e}")
+
+    duration = extract_duration_from_ffmpeg_stderr(result.stderr)
+
+    audio_chunks_dir = audio_ingestion.create_audio_chunks(config.audio_path)
+
+    chunk_durations = audio_ingestion.compute_chunk_durations(
+        duration,
+        config.chunk_duration,
+    )
+
+    video_metadata = {
+        "id": job_id,
+        "title": original_filename,
+        "description": None,
+        "duration": duration,
+        "upload_date": None,
+        "uploader": "Uploaded file",
+        "channel": None,
+        "view_count": None,
+        "like_count": None,
+        "thumbnail": None,
+        "webpage_url": None,
+    }
+
+    video_metadata_file_path = save_json(
+        video_metadata,
+        config.video_metadata_file_path,
+    )
+
+    return AudioIngestionArtifact(
+        audio_file_path=config.audio_path,
+        audio_chunks_dir=audio_chunks_dir,
+        video_metadata_file_path=video_metadata_file_path,
+        chunk_durations=chunk_durations,
+    )
+
+
+# --------------------------------------------------------------------------
+# Background pipeline runner
+# --------------------------------------------------------------------------
+
+
+def run_job(
+    job_id: str,
+    source_type: str,
+    source_value: str,
+    original_filename: Optional[str] = None,
+) -> None:
+    """
+    Run the full VideoMind pipeline.
+
+    Heavy pipeline imports happen only when a job actually starts.
+    """
+
+    pipeline = None
+
+    try:
+
+        # Lazy imports
+        from src.pipeline.video_pipeline import (
+            VideoPipeline,
+        )
+
+        from src.pipeline.qa_pipeline import (
+            QAPipeline,
+        )
+
+        from src.utils.main_utils import (
+            load_json,
+            format_timestamp,
+        )
+
+        with PIPELINE_LOCK:
+
+            pipeline = VideoPipeline()
+
+            # --------------------------------------------------------------
+            # INGESTION
+            # --------------------------------------------------------------
+
+            set_stage(
+                job_id,
+                "ingestion",
+                "running",
+            )
+
+            if source_type == "url":
+                ingestion_artifact = pipeline.start_audio_ingestion(
+                    video_url=source_value
+                )
+
+                video_meta = load_json(ingestion_artifact.video_metadata_file_path)
+
+                with JOBS_LOCK:
+                    JOBS[job_id]["video_id"] = video_meta.get("id")
+
+            else:
+                ingestion_artifact = ingest_uploaded_file(
+                    job_id=job_id,
+                    saved_path=source_value,
+                    original_filename=original_filename,
+                    pipeline=pipeline,
+                )
+
+                video_meta = load_json(ingestion_artifact.video_metadata_file_path)
+
+                with JOBS_LOCK:
+                    JOBS[job_id]["media_url"] = (
+                        f"/media/{job_id}/{os.path.basename(source_value)}"
+                    )
+
+            set_stage(
+                job_id,
+                "ingestion",
+                "done",
+            )
+
+            # --------------------------------------------------------------
+            # TRANSCRIPTION
+            # --------------------------------------------------------------
+
+            set_stage(
+                job_id,
+                "transcription",
+                "running",
+            )
+
+            transcription_artifact = pipeline.start_audio_transcription(
+                ingestion_artifact
+            )
+
+            set_stage(
+                job_id,
+                "transcription",
+                "done",
+            )
+
+            # --------------------------------------------------------------
+            # TEXT PROCESSING
+            # --------------------------------------------------------------
+
+            set_stage(
+                job_id,
+                "text_processing",
+                "running",
+            )
+
+            text_processing_artifact = pipeline.start_text_processing(
+                transcription_artifact
+            )
+
+            set_stage(
+                job_id,
+                "text_processing",
+                "done",
+            )
+
+            # --------------------------------------------------------------
+            # CHAPTERS + SUMMARY
+            # --------------------------------------------------------------
+
+            set_stage(
+                job_id,
+                "timestamp",
+                "running",
+            )
+
+            set_stage(
+                job_id,
+                "summary",
+                "running",
+            )
+
+            timestamp_artifact = None
+            summary_artifact = None
+
+            stage_errors = {}
+
+            # Run sequentially to reduce peak RAM.
+
+            try:
+                timestamp_artifact = pipeline.start_timestamp_generation(
+                    transcription_artifact
+                )
+
+                set_stage(
+                    job_id,
+                    "timestamp",
+                    "done",
+                )
+
+            except Exception as e:
+                stage_errors["timestamp"] = str(e)
+
+                set_stage(
+                    job_id,
+                    "timestamp",
+                    "error",
+                )
+
+            try:
+                summary_artifact = pipeline.start_summary_generation(
+                    transcription_artifact
+                )
+
+                set_stage(
+                    job_id,
+                    "summary",
+                    "done",
+                )
+
+            except Exception as e:
+                stage_errors["summary"] = str(e)
+
+                set_stage(
+                    job_id,
+                    "summary",
+                    "error",
+                )
+
+            if stage_errors:
+                logger.warning(
+                    "Non-critical stage failures: " + ", ".join(stage_errors.keys())
+                )
+
+            # --------------------------------------------------------------
+            # EMBEDDING
+            # --------------------------------------------------------------
+
+            set_stage(
+                job_id,
+                "embedding",
+                "running",
+            )
+
+            embedding_artifact = pipeline.start_embedding_indexing(
+                text_processing_artifact
+            )
+
+            set_stage(
+                job_id,
+                "embedding",
+                "done",
+            )
+
+            if stage_errors:
+                with JOBS_LOCK:
+                    JOBS[job_id]["warning"] = (
+                        "Some stages failed, but the pipeline completed. Q&A is still available."
+                    )
+
+            # --------------------------------------------------------------
+            # QA PIPELINE
+            # --------------------------------------------------------------
+
+            qa_pipeline = QAPipeline(embedding_artifact=embedding_artifact)
+
+            # --------------------------------------------------------------
+            # LOAD RESULTS
+            # --------------------------------------------------------------
+
+            timestamps = []
+
+            if timestamp_artifact is not None:
+                timestamps = load_json(timestamp_artifact.timestamp_file_path)["topics"]
+
+            summary = {}
+
+            if summary_artifact is not None:
+                summary = load_json(summary_artifact.summary_file_path)
+
+            segments = load_json(transcription_artifact.transcript_file_path)[
+                "segments"
+            ]
+
+            transcript = [
+                {
+                    "start_time": format_timestamp(seg["start"]),
+                    "end_time": format_timestamp(seg["end"]),
+                    "text": seg["text"],
+                }
+                for seg in segments
+            ]
+
+            # --------------------------------------------------------------
+            # COMPLETE JOB
+            # --------------------------------------------------------------
+
+            with JOBS_LOCK:
+                job = JOBS[job_id]
+
+                job["qa_pipeline"] = qa_pipeline
+
+                job["status"] = "completed"
+                job["current_stage"] = None
+
+                job["results"] = {
+                    "metadata": video_meta,
+                    "summary": summary,
+                    "timestamps": timestamps,
+                    "transcript": transcript,
+                }
+
+            logger.info(f"Job {job_id} completed successfully")
+
+            # Release temporary references.
+            pipeline = None
+            ingestion_artifact = None
+            transcription_artifact = None
+            text_processing_artifact = None
+            timestamp_artifact = None
+            summary_artifact = None
+            embedding_artifact = None
+
+            gc.collect()
+
+    except Exception as e:
+        with JOBS_LOCK:
+            job = JOBS[job_id]
+
+            if job["status"] != "failed":
+                job["status"] = "failed"
+                job["error"] = str(e)
+
+            current = job.get("current_stage")
+
+            if current and job["stages"].get(current) == "running":
+                job["stages"][current] = "error"
+
+        logger.error(f"Job {job_id} failed: {e}")
+
+    finally:
+
+        # Always release local pipeline references.
+        pipeline = None
+
+        # Keep only the newest finished job.
+        should_collect = False
+
+        with JOBS_LOCK:
+            BUSY["active"] = False
+            should_collect = prune_finished_jobs_locked()
+
+        if should_collect:
+            gc.collect()
+
+
+# --------------------------------------------------------------------------
+# Routes
+# --------------------------------------------------------------------------
+
+
+@app.get("/")
+def index():
+    """Serve the single-page frontend."""
+
+    return FileResponse(
+        os.path.join(
+            STATIC_DIR,
+            "index.html",
+        )
+    )
+
+
+@app.get("/api/config")
+def get_config():
+    """Return stage definitions."""
+
+    return {"stages": STAGE_DEFS}
+
+
+# --------------------------------------------------------------------------
+# URL validation
+# --------------------------------------------------------------------------
+
+
+class ValidateRequest(BaseModel):
     url: str
 
 
-class AskRequest(BaseModel):
-    question: str
+@app.post("/api/validate")
+def validate_url(
+    payload: ValidateRequest,
+):
+    """
+    Quick pre-flight probe of a video URL.
+    """
 
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-
-def sanitize_filename(filename: str) -> str:
-    filename = os.path.basename(filename)
-    filename = filename.replace("\x00", "")
-    return filename or "uploaded_video"
-
-
-def safe_artifact_path(path: str) -> bool:
     try:
-        artifact_base = os.path.abspath("artifact")
-        target_path = os.path.abspath(path)
+        import yt_dlp
 
-        return os.path.commonpath([artifact_base, target_path]) == artifact_base
-    except Exception:
-        return False
-
-
-def cleanup_job_artifacts(job: dict) -> None:
-    """
-    Delete all artifacts belonging to an old job.
-
-    Safety:
-    - Only deletes paths inside ./artifact
-    - Never deletes arbitrary filesystem paths
-    """
-    try:
-        artifact_root = job.get("artifact_root")
-
-        if not artifact_root:
-            return
-
-        artifact_root = os.path.abspath(artifact_root)
-
-        if not safe_artifact_path(artifact_root):
-            logger.warning(f"Skipping unsafe artifact cleanup: {artifact_root}")
-            return
-
-        if os.path.exists(artifact_root):
-            shutil.rmtree(artifact_root)
-            logger.info(f"Deleted previous job artifacts: {artifact_root}")
-
-    except Exception as e:
-        logger.warning(f"Could not delete previous job artifacts: {e}")
-
-
-def cleanup_old_job_memory() -> None:
-    """
-    Remove old job objects from in-memory JOBS.
-
-    This does NOT delete the active job.
-    """
-    global ACTIVE_JOB_ID
-
-    with JOB_LOCK:
-        active_id = ACTIVE_JOB_ID
-
-        removable = [
-            job_id
-            for job_id, job in JOBS.items()
-            if job_id != active_id and job.get("status") in {"completed", "failed"}
-        ]
-
-        if len(removable) > MAX_COMPLETED_JOBS:
-            for job_id in removable[:-MAX_COMPLETED_JOBS]:
-                JOBS.pop(job_id, None)
-
-
-def public_job_view(job: dict) -> dict:
-    """
-    Never expose internal objects such as QAPipeline.
-    """
-    if not job:
-        return {}
-
-    return {
-        "job_id": job.get("job_id"),
-        "status": job.get("status"),
-        "url": job.get("url"),
-        "filename": job.get("filename"),
-        "created_at": job.get("created_at"),
-        "updated_at": job.get("updated_at"),
-        "current_stage": job.get("current_stage"),
-        "progress": job.get("progress", 0),
-        "error": job.get("error"),
-        "results": job.get("results", {}),
-        "media_url": job.get("media_url"),
-    }
-
-
-def update_job(job_id: str, **updates) -> None:
-    with JOB_LOCK:
-        if job_id not in JOBS:
-            return
-
-        JOBS[job_id].update(
-            updates,
-            updated_at=datetime.utcnow().isoformat(),
-        )
-
-
-def get_job(job_id: str) -> dict:
-    with JOB_LOCK:
-        return JOBS.get(job_id)
-
-
-def get_artifact_root_from_pipeline(
-    video_pipeline,
-    job_id: str,
-) -> str | None:
-    """
-    Try to obtain the pipeline's artifact root.
-
-    Different versions of VideoPipeline may expose artifact
-    information differently, so we check the common locations.
-    """
-    candidates = []
-
-    for attr_name in (
-        "artifact_root",
-        "artifact_dir",
-        "artifact_path",
-    ):
-        value = getattr(video_pipeline, attr_name, None)
-        if value:
-            candidates.append(value)
-
-    config = getattr(video_pipeline, "config", None)
-
-    if config:
-        for attr_name in (
-            "artifact_root",
-            "artifact_dir",
-            "artifact_path",
-        ):
-            value = getattr(config, attr_name, None)
-            if value:
-                candidates.append(value)
-
-    # Find the newest artifact directory if pipeline does not directly expose the path.
-    if os.path.exists("artifact"):
-        try:
-            directories = [
-                os.path.join("artifact", item)
-                for item in os.listdir("artifact")
-                if os.path.isdir(os.path.join("artifact", item))
-            ]
-
-            if directories:
-                directories.sort(
-                    key=os.path.getmtime,
-                    reverse=True,
-                )
-                candidates.append(directories[0])
-
-        except Exception:
-            pass
-
-    for candidate in candidates:
-        try:
-            candidate = os.path.abspath(str(candidate))
-
-            if safe_artifact_path(candidate):
-                return candidate
-
-        except Exception:
-            continue
-
-    return None
-
-
-# ============================================================
-# YOUTUBE VALIDATION
-# DO NOT CHANGE THIS YT-DLP CONFIG
-# ============================================================
-
-
-def validate_youtube_url(video_url: str) -> dict:
-    try:
-        logger.info(f"Validating YouTube URL: {video_url}")
-
-        ydl_opts = {
+        opts = {
             "quiet": False,
             "no_warnings": False,
             "verbose": True,
             "noplaylist": True,
+            "skip_download": True,
             "cookiefile": os.getenv(
                 "YOUTUBE_COOKIE_FILE",
-                "cookies.txt",
+                "/tmp/cookies.txt",
             ),
+            "js_runtimes": {"node": {}},
             "extractor_args": {
-                "youtube": {"player_client": ["mweb", "web_safari"]},
+                "youtube": {
+                    "player_client": [
+                        "mweb",
+                        "web_safari",
+                    ]
+                },
                 "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
             },
-            "js_runtimes": {"node": {}},
         }
 
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(
-                video_url,
+                payload.url,
                 download=False,
             )
 
         if info is None:
-            raise ValueError("Could not retrieve video information")
+            raise ValueError("Could not read this link")
 
         return {
             "valid": True,
             "title": info.get("title"),
             "duration": info.get("duration"),
             "thumbnail": info.get("thumbnail"),
-            "webpage_url": info.get("webpage_url", video_url),
+            "channel": (info.get("channel") or info.get("uploader")),
+            "video_id": info.get("id"),
         }
 
-    except yt_dlp.utils.DownloadError as e:
-        logger.exception("YouTube validation failed")
-        raise MyException(e, sys) from e
-
     except Exception as e:
-        logger.exception("YouTube validation failed")
-        raise MyException(e, sys) from e
-
-
-# ============================================================
-# PIPELINE
-# ============================================================
-
-
-def run_job(job_id: str) -> None:
-    """
-    Execute the complete VideoMind pipeline.
-
-    QAPipeline is intentionally NOT kept inside JOBS.
-    """
-    try:
-        update_job(
-            job_id,
-            status="processing",
-            current_stage="initializing",
-            progress=2,
-        )
-
-        job = get_job(job_id)
-
-        if not job:
-            logger.warning(f"Job {job_id} no longer exists")
-            return
-
-        video_url = job["url"]
-        uploaded_file_path = job.get("source_file_path")
-
-        logger.info(f"Starting VideoMind pipeline for job: {job_id}")
-
-        from src.pipeline.video_pipeline import VideoPipeline
-
-        video_pipeline = VideoPipeline()
-
-        update_job(
-            job_id,
-            current_stage="video_processing",
-            progress=5,
-        )
-
-        # ----------------------------------------------------
-        # RUN MAIN VIDEO PIPELINE
-        # ----------------------------------------------------
-
-        if uploaded_file_path:
-            pipeline_result = video_pipeline.run(uploaded_file_path)
-        else:
-            pipeline_result = video_pipeline.run(video_url)
-
-        logger.info(f"VideoPipeline completed for job: {job_id}")
-
-        # ----------------------------------------------------
-        # SAVE ARTIFACT ROOT
-        # ----------------------------------------------------
-
-        artifact_root = get_artifact_root_from_pipeline(
-            video_pipeline,
-            job_id,
-        )
-
-        if artifact_root:
-            update_job(
-                job_id,
-                artifact_root=artifact_root,
-            )
-
-        # ----------------------------------------------------
-        # RELEASE VIDEO PIPELINE
-        # ----------------------------------------------------
-
-        del video_pipeline
-        gc.collect()
-
-        # ----------------------------------------------------
-        # PIPELINE RESULT EXTRACTION
-        # ----------------------------------------------------
-
-        transcript_file_path = None
-        embedding_artifact = None
-        media_file_path = None
-
-        if pipeline_result is not None:
-
-            if isinstance(pipeline_result, dict):
-                transcript_file_path = pipeline_result.get("transcript_file_path")
-
-                embedding_artifact = pipeline_result.get("embedding_artifact")
-
-                media_file_path = pipeline_result.get("media_file_path")
-
-            else:
-                transcript_file_path = getattr(
-                    pipeline_result,
-                    "transcript_file_path",
-                    None,
-                )
-
-                embedding_artifact = getattr(
-                    pipeline_result,
-                    "embedding_artifact",
-                    None,
-                )
-
-                media_file_path = getattr(
-                    pipeline_result,
-                    "media_file_path",
-                    None,
-                )
-
-        if transcript_file_path:
-            update_job(
-                job_id,
-                transcript_file_path=transcript_file_path,
-            )
-
-        if embedding_artifact:
-            update_job(
-                job_id,
-                embedding_artifact=embedding_artifact,
-            )
-
-        if media_file_path:
-            update_job(
-                job_id,
-                media_file_path=media_file_path,
-            )
-
-        # ----------------------------------------------------
-        # TIMESTAMP + SUMMARY
-        # ----------------------------------------------------
-
-        update_job(
-            job_id,
-            current_stage="generating_results",
-            progress=90,
-        )
-
-        transcript_data = None
-
-        if transcript_file_path and os.path.exists(transcript_file_path):
-            try:
-                import json
-
-                with open(
-                    transcript_file_path,
-                    "r",
-                    encoding="utf-8",
-                ) as file:
-                    transcript_data = json.load(file)
-
-            except Exception as e:
-                logger.warning(f"Could not load transcript: {e}")
-
-        timestamp_result = None
-        summary_result = None
-
-        # Keep these imports lazy.
-        try:
-            from src.components.timestamp_generator import (
-                TimestampGenerator,
-            )
-        except Exception:
-            TimestampGenerator = None
-
-        try:
-            from src.components.summary_generator import (
-                SummaryGenerator,
-            )
-        except Exception:
-            SummaryGenerator = None
-
-        # ----------------------------------------------------
-        # GENERATE TIMESTAMPS
-        # ----------------------------------------------------
-
-        if TimestampGenerator and transcript_data:
-
-            try:
-                timestamp_generator = TimestampGenerator()
-
-                if isinstance(transcript_data, dict):
-                    segments = transcript_data.get(
-                        "segments",
-                        [],
-                    )
-                else:
-                    segments = transcript_data
-
-                timestamp_result = timestamp_generator.generate(segments)
-
-                del timestamp_generator
-                gc.collect()
-
-            except Exception as e:
-                logger.warning(f"Timestamp generation failed: {e}")
-
-        # ----------------------------------------------------
-        # GENERATE SUMMARY
-        # ----------------------------------------------------
-
-        if SummaryGenerator and transcript_data:
-
-            try:
-                summary_generator = SummaryGenerator()
-
-                if isinstance(transcript_data, dict):
-                    segments = transcript_data.get(
-                        "segments",
-                        [],
-                    )
-                else:
-                    segments = transcript_data
-
-                summary_result = summary_generator.generate(segments)
-
-                del summary_generator
-                gc.collect()
-
-            except Exception as e:
-                logger.warning(f"Summary generation failed: {e}")
-
-        # ----------------------------------------------------
-        # SAVE RESULTS
-        # ----------------------------------------------------
-
-        update_job(
-            job_id,
-            results={
-                "summary": summary_result,
-                "timestamps": timestamp_result,
-            },
-            status="completed",
-            current_stage="completed",
-            progress=100,
-        )
-
-        logger.info(f"Job completed successfully: {job_id}")
-
-    except Exception as e:
-        logger.exception(f"Job failed: {job_id}")
-
-        update_job(
-            job_id,
-            status="failed",
-            current_stage="failed",
-            progress=100,
-            error=str(e),
-        )
-
-    finally:
-        gc.collect()
-        cleanup_old_job_memory()
-
-
-# ============================================================
-# FRONTEND
-# ============================================================
-
-
-@app.get("/")
-def index():
-    return FileResponse("static/index.html")
-
-
-# ============================================================
-# YOUTUBE VALIDATION
-# ============================================================
-
-
-@app.post("/api/validate")
-def validate_url(request: URLRequest):
-    try:
-        video_url = request.url.strip()
-
-        if not video_url:
-            raise HTTPException(
-                status_code=400,
-                detail="URL is required",
-            )
-
-        result = validate_youtube_url(video_url)
-
-        return result
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.exception("URL validation endpoint failed")
-
-        raise HTTPException(
+        return JSONResponse(
             status_code=400,
-            detail=str(e),
+            content={
+                "valid": False,
+                "error": str(e),
+            },
         )
 
 
-# ============================================================
-# CREATE JOB FROM URL
-# ============================================================
+# --------------------------------------------------------------------------
+# Create job
+# --------------------------------------------------------------------------
 
 
 @app.post("/api/jobs")
-def create_url_job(request: URLRequest):
-    global ACTIVE_JOB_ID
+def create_job(
+    url: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+):
+    """Start processing a video."""
 
-    try:
-        video_url = request.url.strip()
-
-        if not video_url:
-            raise HTTPException(
-                status_code=400,
-                detail="URL is required",
-            )
-
-        # ----------------------------------------------------
-        # STEP 1: VALIDATE NEW URL FIRST
-        # Old job remains fully alive if validation fails.
-        # ----------------------------------------------------
-
-        validation = validate_youtube_url(video_url)
-
-        # ----------------------------------------------------
-        # STEP 2: CREATE NEW JOB
-        # ----------------------------------------------------
-
-        new_job_id = str(uuid.uuid4())
-
-        new_job = {
-            "job_id": new_job_id,
-            "status": "queued",
-            "url": video_url,
-            "filename": None,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-            "current_stage": "queued",
-            "progress": 0,
-            "error": None,
-            "artifact_root": None,
-            "transcript_file_path": None,
-            "embedding_artifact": None,
-            "media_file_path": None,
-            "source_file_path": None,
-            "media_url": None,
-            "results": {
-                "summary": None,
-                "timestamps": None,
-            },
-        }
-
-        # ----------------------------------------------------
-        # STEP 3: ADD NEW JOB FIRST
-        # ----------------------------------------------------
-
-        with JOB_LOCK:
-            old_job_id = ACTIVE_JOB_ID
-            old_job = JOBS.get(old_job_id)
-
-            JOBS[new_job_id] = new_job
-
-            ACTIVE_JOB_ID = new_job_id
-
-        logger.info(f"Created new job: {new_job_id}")
-
-        # ----------------------------------------------------
-        # STEP 4: ONLY AFTER NEW JOB EXISTS, DELETE OLD JOB ARTIFACTS
-        # ----------------------------------------------------
-
-        if old_job and old_job_id != new_job_id:
-
-            logger.info(f"Cleaning artifacts for old job: {old_job_id}")
-
-            cleanup_job_artifacts(old_job)
-
-            with JOB_LOCK:
-                JOBS.pop(old_job_id, None)
-
-        # ----------------------------------------------------
-        # STEP 5: RETURN NEW JOB
-        # ----------------------------------------------------
-
-        response = public_job_view(JOBS[new_job_id])
-
-        response["validation"] = validation
-
-        return response
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.exception("Could not create URL job")
-
+    if not url and not file:
         raise HTTPException(
             status_code=400,
-            detail=str(e),
+            detail="Provide a video URL or upload a video file",
         )
 
-
-# ============================================================
-# CREATE JOB FROM UPLOAD
-# ============================================================
-
-
-@app.post("/api/jobs/upload")
-async def create_upload_job(file: UploadFile = File(...)):
-    global ACTIVE_JOB_ID
-
-    try:
-        if not file.filename:
+    with JOBS_LOCK:
+        if BUSY["active"]:
             raise HTTPException(
-                status_code=400,
-                detail="Filename is missing",
+                status_code=409,
+                detail="Already processing a video — wait for it to finish",
             )
 
-        filename = sanitize_filename(file.filename)
+        BUSY["active"] = True
 
-        upload_dir = os.path.abspath("artifact/uploads")
+    try:
+        # --------------------------------------------------------------
+        # URL
+        # --------------------------------------------------------------
+
+        if url:
+            job_id = new_job(
+                "url",
+                url,
+            )
+
+            threading.Thread(
+                target=run_job,
+                args=(
+                    job_id,
+                    "url",
+                    url,
+                ),
+                daemon=True,
+            ).start()
+
+            return {"job_id": job_id}
+
+        # --------------------------------------------------------------
+        # UPLOADED FILE
+        # --------------------------------------------------------------
+
+        job_id = new_job(
+            "upload",
+            file.filename,
+        )
+
+        job_dir = os.path.join(
+            UPLOAD_DIR,
+            job_id,
+        )
 
         os.makedirs(
-            upload_dir,
+            job_dir,
             exist_ok=True,
         )
 
-        file_path = os.path.join(
-            upload_dir,
-            filename,
+        saved_path = os.path.join(
+            job_dir,
+            file.filename,
         )
 
-        # Prevent accidental overwrite collisions.
-        if os.path.exists(file_path):
-
-            stem, ext = os.path.splitext(filename)
-
-            file_path = os.path.join(
-                upload_dir,
-                f"{stem}_{uuid.uuid4().hex[:8]}{ext}",
-            )
-
-        with open(
-            file_path,
-            "wb",
-        ) as destination:
-
-            while True:
-                chunk = await file.read(1024 * 1024)
-
-                if not chunk:
-                    break
-
-                destination.write(chunk)
-
-        new_job_id = str(uuid.uuid4())
-
-        new_job = {
-            "job_id": new_job_id,
-            "status": "queued",
-            "url": None,
-            "filename": os.path.basename(file_path),
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-            "current_stage": "queued",
-            "progress": 0,
-            "error": None,
-            "artifact_root": None,
-            "transcript_file_path": None,
-            "embedding_artifact": None,
-            "media_file_path": file_path,
-            "source_file_path": file_path,
-            "media_url": f"/api/jobs/{new_job_id}/media",
-            "results": {
-                "summary": None,
-                "timestamps": None,
-            },
-        }
-
-        with JOB_LOCK:
-            old_job_id = ACTIVE_JOB_ID
-            old_job = JOBS.get(old_job_id)
-
-            JOBS[new_job_id] = new_job
-
-            ACTIVE_JOB_ID = new_job_id
-
-        logger.info(f"Created upload job: {new_job_id}")
-
-        if old_job and old_job_id != new_job_id:
-
-            cleanup_job_artifacts(old_job)
-
-            with JOB_LOCK:
-                JOBS.pop(old_job_id, None)
+        with open(saved_path, "wb") as out:
+            shutil.copyfileobj(file.file, out)
 
         threading.Thread(
             target=run_job,
-            args=(new_job_id,),
+            args=(
+                job_id,
+                "upload",
+                saved_path,
+                file.filename,
+            ),
             daemon=True,
         ).start()
 
-        return public_job_view(new_job)
-
-    except HTTPException:
-        raise
+        return {"job_id": job_id}
 
     except Exception as e:
-        logger.exception("Could not create upload job")
+        with JOBS_LOCK:
+            BUSY["active"] = False
 
         raise HTTPException(
             status_code=500,
-            detail=str(e),
+            detail=f"Couldn't start processing: {e}",
         )
 
-    finally:
-        try:
-            await file.close()
-        except Exception:
-            pass
 
-
-# ============================================================
-# START URL JOB PIPELINE
-# ============================================================
-
-
-@app.post("/api/jobs/{job_id}/start")
-def start_job(job_id: str):
-    job = get_job(job_id)
-
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found",
-        )
-
-    if job.get("status") not in {
-        "queued",
-        "pending",
-    }:
-        return public_job_view(job)
-
-    update_job(
-        job_id,
-        status="starting",
-        current_stage="starting",
-        progress=1,
-    )
-
-    threading.Thread(
-        target=run_job,
-        args=(job_id,),
-        daemon=True,
-    ).start()
-
-    return public_job_view(get_job(job_id))
-
-
-# ============================================================
-# JOB STATUS
-# ============================================================
+# --------------------------------------------------------------------------
+# Job status
+# --------------------------------------------------------------------------
 
 
 @app.get("/api/jobs/{job_id}")
-def job_status(job_id: str):
+def get_job(
+    job_id: str,
+):
+    """
+    Poll job status and return results once completed.
+    """
 
-    job = get_job(job_id)
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
 
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found",
-        )
-
-    return public_job_view(job)
-
-
-# ============================================================
-# TRANSCRIPT
-# ============================================================
-
-
-@app.get("/api/jobs/{job_id}/transcript")
-def get_transcript(job_id: str):
-
-    job = get_job(job_id)
-
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found",
-        )
-
-    transcript_file_path = job.get("transcript_file_path")
-
-    if not transcript_file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Transcript not available",
-        )
-
-    if not os.path.exists(transcript_file_path):
-        raise HTTPException(
-            status_code=404,
-            detail="Transcript file not found",
-        )
-
-    try:
-        import json
-
-        with open(
-            transcript_file_path,
-            "r",
-            encoding="utf-8",
-        ) as file:
-            transcript = json.load(file)
-
-        return transcript
-
-    except Exception as e:
-
-        logger.exception("Could not read transcript")
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e),
-        )
-
-
-# ============================================================
-# MEDIA
-# ============================================================
-
-
-@app.get("/api/jobs/{job_id}/media")
-def get_media(job_id: str):
-
-    job = get_job(job_id)
-
-    if not job:
-        raise HTTPException(
-            status_code=404,
-            detail="Job not found",
-        )
-
-    media_file_path = job.get("media_file_path")
-
-    if not media_file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="Media not available",
-        )
-
-    media_file_path = os.path.abspath(media_file_path)
-
-    artifact_base = os.path.abspath("artifact")
-
-    try:
-        if (
-            os.path.commonpath(
-                [
-                    artifact_base,
-                    media_file_path,
-                ]
-            )
-            != artifact_base
-        ):
+        if job is None:
             raise HTTPException(
-                status_code=403,
-                detail="Invalid media path",
+                status_code=404,
+                detail="Job not found",
             )
 
-    except ValueError:
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid media path",
-        )
-
-    if not os.path.exists(media_file_path):
-        raise HTTPException(
-            status_code=404,
-            detail="Media file not found",
-        )
-
-    return FileResponse(media_file_path)
+        return public_job_view(job)
 
 
-# ============================================================
-# ASK QUESTION
-# ============================================================
+# --------------------------------------------------------------------------
+# Q&A
+# --------------------------------------------------------------------------
+
+
+class AskRequest(BaseModel):
+    question: str
 
 
 @app.post("/api/jobs/{job_id}/ask")
 def ask_question(
     job_id: str,
-    request: AskRequest,
+    payload: AskRequest,
 ):
+    """
+    Answer a question about a completed video.
 
-    job = get_job(job_id)
+    QAPipeline is created only when needed.
+    """
 
-    if not job:
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+
+        if job is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Job not found",
+            )
+
+        qa_pipeline = job.get("qa_pipeline")
+
+    if qa_pipeline is None:
         raise HTTPException(
-            status_code=404,
-            detail="Job not found",
+            status_code=409,
+            detail="This video isn't ready for questions yet",
         )
-
-    if job.get("status") != "completed":
-        raise HTTPException(
-            status_code=400,
-            detail="Job is not completed yet",
-        )
-
-    question = request.question.strip()
-
-    if not question:
-        raise HTTPException(
-            status_code=400,
-            detail="Question is required",
-        )
-
-    embedding_artifact = job.get("embedding_artifact")
-
-    if embedding_artifact is None:
-
-        raise HTTPException(
-            status_code=500,
-            detail="Embedding artifact is not available",
-        )
-
-    qa_pipeline = None
 
     try:
-
-        from src.pipeline.qa_pipeline import (
-            QAPipeline,
-        )
-
-        qa_pipeline = QAPipeline(embedding_artifact)
-
-        answer = qa_pipeline.ask(question)
-
-        return answer
-
-    except HTTPException:
-        raise
+        return qa_pipeline.ask(payload.question)
 
     except Exception as e:
+        from src.exception import MyException
 
-        logger.exception("Question answering failed")
+        if isinstance(e, MyException):
+            raise HTTPException(
+                status_code=500,
+                detail=str(e),
+            )
 
         raise HTTPException(
             status_code=500,
             detail=str(e),
         )
 
-    finally:
 
-        qa_pipeline = None
-        gc.collect()
-
-
-# ============================================================
-# HEALTH
-# ============================================================
+# --------------------------------------------------------------------------
+# Uploaded media
+# --------------------------------------------------------------------------
 
 
-@app.get("/health")
-def health():
-    return {
-        "status": "ok",
-    }
+@app.get("/media/{job_id}/{filename}")
+def get_media(
+    job_id: str,
+    filename: str,
+):
+    """Serve uploaded media."""
+
+    file_path = os.path.join(
+        UPLOAD_DIR,
+        job_id,
+        filename,
+    )
+
+    if not os.path.exists(file_path):
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    return FileResponse(file_path)

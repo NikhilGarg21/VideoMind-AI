@@ -551,6 +551,7 @@ def validate_url(payload: ValidateRequest):
             "format": "ba/b",
             "cookiefile": os.getenv("YOUTUBE_COOKIE_FILE", "/tmp/cookies.txt"),
             "extractor_args": {
+                "youtube": {"player_client": ["mweb"]},
                 "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
             },
         }

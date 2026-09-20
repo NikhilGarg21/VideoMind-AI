@@ -57,9 +57,10 @@ class AudioIngestion:
                 "no_warnings": False,
                 "cookiefile": os.getenv("YOUTUBE_COOKIE_FILE", "/tmp/cookies.txt"),
                 "extractor_args": {
-                    "youtube": {"player_client": ["mweb"]},
+                    "youtube": {"player_client": ["mweb", "web_safari"]},
                     "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
                 },
+                "js_runtimes": {"node": {}},
                 "postprocessors": [
                     {
                         "key": "FFmpegExtractAudio",

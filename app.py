@@ -543,18 +543,20 @@ def validate_url(payload: ValidateRequest):
         import os
         import yt_dlp
 
+        # Inside validate_url() in app.py
+
         opts = {
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
-            "format": "ba/b",
+            "format": "bestaudio/best",
             "cookiefile": os.getenv(
                 "YOUTUBE_COOKIE_FILE",
                 "cookies.txt",
             ),
             "extractor_args": {
-                "youtube": {"player_client": ["mweb"]}
+                "youtube": {"player_client": ["android", "ios"]}  # Replaced "mweb"
             },
         }
 

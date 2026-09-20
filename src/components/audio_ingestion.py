@@ -49,8 +49,9 @@ class AudioIngestion:
 
             outtmpl_base = os.path.splitext(self.audio_ingestion_config.audio_path)[0]
 
+            # Inside AudioIngestion.download_audio() in audio_ingestion.py
             ydl_opts = {
-                "format": "ba/b",
+                "format": "bestaudio/best",  # Changed from "ba/b" to broaden format fallback
                 "outtmpl": outtmpl_base + ".%(ext)s",
                 "noplaylist": True,
                 "quiet": False,
@@ -60,7 +61,7 @@ class AudioIngestion:
                     "cookies.txt",
                 ),
                 "extractor_args": {
-                    "youtube": {"player_client": ["mweb"]}
+                    "youtube": {"player_client": ["android", "ios"]}  # Replaced "mweb" with mobile clients
                 },
                 "postprocessors": [
                     {

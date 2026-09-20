@@ -1,10 +1,21 @@
+#!/bin/bash
+
 echo "Starting bgutil POT provider..."
+
 (cd bgutil-ytdlp-pot-provider/server && node build/main.js) &
 
-sleep 5
+echo "Waiting for bgutil..."
 
-echo "Checking bgutil..."
-curl -sS http://127.0.0.1:4416/ping || true
+for i in {1..30}; do
+    if curl -sS http://127.0.0.1:4416/ping > /dev/null 2>&1; then
+        echo "bgutil is ready!"
+        break
+    fi
+
+    echo "bgutil not ready yet... attempt $i/30"
+    sleep 2
+done
 
 echo "Starting FastAPI..."
+
 exec uvicorn app:app --host 0.0.0.0 --port "$PORT"

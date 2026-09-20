@@ -553,7 +553,7 @@ def validate_url(payload: ValidateRequest):
                 "cookies.txt",
             ),
             "extractor_args": {
-                "youtube": {"player_client": ["default", "web_embedded"]}
+                "youtube": {"player_client": ["mweb"]}
             },
         }
 

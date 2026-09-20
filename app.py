@@ -369,10 +369,17 @@ def run_job(
             stage_errors = {}
 
             with ThreadPoolExecutor(max_workers=2) as executor:
-                future_timestamp = executor.submit(pipeline.start_timestamp_generation, transcription_artifact)
-                future_summary = executor.submit(pipeline.start_summary_generation, transcription_artifact)
+                future_timestamp = executor.submit(
+                    pipeline.start_timestamp_generation, transcription_artifact
+                )
+                future_summary = executor.submit(
+                    pipeline.start_summary_generation, transcription_artifact
+                )
 
-                for future, key in ((future_timestamp, "timestamp"), (future_summary, "summary")):
+                for future, key in (
+                    (future_timestamp, "timestamp"),
+                    (future_summary, "summary"),
+                ):
                     try:
                         result = future.result()
                         if key == "timestamp":
@@ -386,8 +393,7 @@ def run_job(
 
                 if stage_errors:
                     logger.warning(
-                        "Non-critical stage failures: "
-                        + ", ".join(stage_errors.keys())
+                        "Non-critical stage failures: " + ", ".join(stage_errors.keys())
                     )
 
             # --------------------------------------------------------------
@@ -428,16 +434,12 @@ def run_job(
             timestamps = []
 
             if timestamp_artifact is not None:
-                timestamps = load_json(
-                    timestamp_artifact.timestamp_file_path
-                )["topics"]
+                timestamps = load_json(timestamp_artifact.timestamp_file_path)["topics"]
 
             summary = {}
 
             if summary_artifact is not None:
-                summary = load_json(
-                    summary_artifact.summary_file_path
-                )
+                summary = load_json(summary_artifact.summary_file_path)
 
             segments = load_json(transcription_artifact.transcript_file_path)[
                 "segments"
@@ -526,10 +528,8 @@ def get_config():
 # URL validation
 # --------------------------------------------------------------------------
 
-
 class ValidateRequest(BaseModel):
     url: str
-
 
 @app.post("/api/validate")
 def validate_url(payload: ValidateRequest):
@@ -538,8 +538,7 @@ def validate_url(payload: ValidateRequest):
     """
 
     try:
-
-        # Lazy import
+        import os
         import yt_dlp
 
         opts = {
@@ -547,10 +546,16 @@ def validate_url(payload: ValidateRequest):
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "cookiefile": os.getenv(
+                "YOUTUBE_COOKIE_FILE",
+                "cookies.txt",
+            ),
+            "extractor_args": {
+                "youtube": {"player_client": ["default", "web_embedded"]}
+            },
         }
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-
             info = ydl.extract_info(
                 payload.url,
                 download=False,
@@ -569,7 +574,6 @@ def validate_url(payload: ValidateRequest):
         }
 
     except Exception as e:
-
         return JSONResponse(
             status_code=400,
             content={

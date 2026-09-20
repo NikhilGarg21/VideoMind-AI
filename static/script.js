@@ -1,630 +1,839 @@
-// ============================================================================
-// VideoMind frontend — no build step, vanilla JS.
-// ============================================================================
-
 const state = {
   jobId: null,
-  sourceType: null, // "url" | "upload"
-  selectedFile: null,
-  validated: null, // result of /api/validate, or null
   pollTimer: null,
-  lastStartedUrl: null,
-  stageDefs: [],
-  ytPlayer: null,
-  ytReady: false,
-  mediaEl: null, // <video> element when playing an uploaded file
-  results: null,
+  startingJob: false,
+  transcript: null,
 };
 
-const el = {
-  statusChip: document.getElementById("statusChip"),
-  statusChipText: document.getElementById("statusChipText"),
+const POLL_INTERVAL_MS = 1500;
+const POLL_ERROR_RETRY_MS = 4000;
 
-  form: document.getElementById("inputForm"),
-  urlInput: document.getElementById("urlInput"),
-  checkBtn: document.getElementById("checkBtn"),
-  dropzone: document.getElementById("dropzone"),
-  dropzoneText: document.getElementById("dropzoneText"),
-  fileInput: document.getElementById("fileInput"),
-  previewCard: document.getElementById("previewCard"),
-  previewThumb: document.getElementById("previewThumb"),
-  previewTitle: document.getElementById("previewTitle"),
-  previewMeta: document.getElementById("previewMeta"),
-  analyzeBtn: document.getElementById("analyzeBtn"),
-  formError: document.getElementById("formError"),
 
-  signalChain: document.getElementById("signalChain"),
-  chainTrack: document.getElementById("chainTrack"),
-  chainSubtext: document.getElementById("chainSubtext"),
+// ============================================================
+// DOM HELPERS
+// ============================================================
 
-  resultsSection: document.getElementById("resultsSection"),
-  videoEmbed: document.getElementById("videoEmbed"),
-  resultTitle: document.getElementById("resultTitle"),
-  resultChannel: document.getElementById("resultChannel"),
-
-  tabs: document.getElementById("tabs"),
-  tldrText: document.getElementById("tldrText"),
-  keyPoints: document.getElementById("keyPoints"),
-  chaptersList: document.getElementById("chaptersList"),
-  transcriptList: document.getElementById("transcriptList"),
-  transcriptSearch: document.getElementById("transcriptSearch"),
-
-  chatLog: document.getElementById("chatLog"),
-  chatEmpty: document.getElementById("chatEmpty"),
-  chatForm: document.getElementById("chatForm"),
-  chatInput: document.getElementById("chatInput"),
-  chatSend: document.getElementById("chatSend"),
-
-  errorBanner: document.getElementById("errorBanner"),
-  errorBannerText: document.getElementById("errorBannerText"),
-};
-
-// ----------------------------------------------------------------------------
-// Init
-// ----------------------------------------------------------------------------
-
-async function init() {
-  buildWaveform();
-  const config = await fetch("/api/config").then((r) => r.json());
-  state.stageDefs = config.stages;
-  buildChainModules();
-  bindEvents();
+function $(id) {
+  return document.getElementById(id);
 }
 
-function buildWaveform() {
-  const svg = document.getElementById("waveformSvg");
-  const bars = 28;
-  let html = "";
-  for (let i = 0; i < bars; i++) {
-    const h = 30 + Math.random() * 130;
-    const x = i * 14;
-    const y = 110 - h / 2;
-    const delay = (i * 0.08).toFixed(2);
-    html += `<rect class="wf-bar" x="${x}" y="${y}" width="7" height="${h}" rx="3" style="animation-delay:${delay}s"></rect>`;
+function escapeHtml(value) {
+  if (value === null || value === undefined) {
+    return "";
   }
-  svg.innerHTML = html;
+
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
-function buildChainModules() {
-  el.chainTrack.innerHTML = state.stageDefs
-    .map(
-      (stage, i) => `
-      <div class="chain-module" data-status="pending" data-key="${stage.key}">
-        <div class="chain-module-head">
-          <span class="chain-module-num">0${i + 1}</span>
-          <span class="chain-status-icon" data-icon>○</span>
-          <span class="chain-module-label">${stage.label}</span>
-          <span class="chain-status-suffix" data-suffix hidden>(Processing…)</span>
-        </div>
-        <div class="chain-meter"><div class="chain-meter-fill"></div></div>
-        <div class="chain-module-desc">${stage.desc}</div>
-      </div>`,
+function escapeAttribute(value) {
+  return escapeHtml(value);
+}
+
+
+// ============================================================
+// STATUS
+// ============================================================
+
+function setStatus(message) {
+  const status = $("status");
+
+  if (status) {
+    status.textContent = message;
+  }
+}
+
+
+// ============================================================
+// PROGRESS
+// ============================================================
+
+function updateProgress(progress) {
+  const progressBar = $("progressBar");
+  const progressText = $("progressText");
+
+  const safeProgress = Math.max(
+    0,
+    Math.min(
+      100,
+      Number(progress) || 0
     )
-    .join("");
-}
-
-// ----------------------------------------------------------------------------
-// Events
-// ----------------------------------------------------------------------------
-
-function bindEvents() {
-  el.checkBtn.addEventListener("click", handleCheck);
-  el.urlInput.addEventListener("input", () => {
-    state.validated = null;
-    el.previewCard.hidden = true;
-    if (state.sourceType !== "upload") updateAnalyzeState();
-  });
-  el.urlInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      handleCheck();
-    }
-  });
-
-  el.dropzone.addEventListener("click", () => el.fileInput.click());
-  el.dropzone.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") el.fileInput.click();
-  });
-  el.fileInput.addEventListener("change", () => {
-    if (el.fileInput.files[0]) handleFileSelected(el.fileInput.files[0]);
-  });
-
-  ["dragover", "dragenter"].forEach((evt) =>
-    el.dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      el.dropzone.classList.add("dragover");
-    }),
   );
-  ["dragleave", "drop"].forEach((evt) =>
-    el.dropzone.addEventListener(evt, (e) => {
-      e.preventDefault();
-      el.dropzone.classList.remove("dragover");
-    }),
-  );
-  el.dropzone.addEventListener("drop", (e) => {
-    const file = e.dataTransfer.files[0];
-    if (file) handleFileSelected(file);
-  });
 
-  el.form.addEventListener("submit", (e) => {
-    e.preventDefault();
-    startJob();
-  });
+  if (progressBar) {
+    progressBar.style.width = `${safeProgress}%`;
+  }
 
-  el.tabs.addEventListener("click", (e) => {
-    const btn = e.target.closest(".tab");
-    if (btn) switchTab(btn.dataset.tab);
-  });
-
-  el.transcriptSearch.addEventListener("input", filterTranscript);
-
-  el.chatForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    sendQuestion();
-  });
-}
-
-// ----------------------------------------------------------------------------
-// Validate (URL) / select (file)
-// ----------------------------------------------------------------------------
-
-async function handleCheck() {
-  const url = el.urlInput.value.trim();
-  if (!url) return;
-
-  clearError();
-  state.sourceType = "url";
-  state.selectedFile = null;
-  el.fileInput.value = "";
-  el.dropzoneText.textContent =
-    "Drop a video or audio file, or click to browse";
-
-  el.checkBtn.disabled = true;
-  el.checkBtn.textContent = "Checking…";
-
-  try {
-    const res = await fetch("/api/validate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
-    });
-    const data = await res.json();
-
-    if (!data.valid) {
-      showFormError(data.error || "Couldn't read this link.");
-      state.validated = null;
-      el.previewCard.hidden = true;
-    } else {
-      state.validated = data;
-      showPreview({
-        title: data.title,
-        meta: formatDuration(data.duration),
-        thumb: data.thumbnail,
-      });
-
-      // Auto-start only when this is a genuinely new URL — re-checking
-      // the same link again (misclick, double Enter) never re-triggers it.
-      if (url !== state.lastStartedUrl) {
-        startJob();
-      }
-    }
-  } catch (err) {
-    showFormError("Couldn't reach the server. Is it running?");
-  } finally {
-    el.checkBtn.disabled = false;
-    el.checkBtn.textContent = "Check";
-    updateAnalyzeState();
+  if (progressText) {
+    progressText.textContent = `${safeProgress}%`;
   }
 }
 
-function handleFileSelected(file) {
-  clearError();
-  state.sourceType = "upload";
-  state.selectedFile = file;
-  state.validated = null;
-  el.urlInput.value = "";
-  el.dropzoneText.textContent = file.name;
 
-  showPreview({
-    title: file.name,
-    meta: formatBytes(file.size),
-    thumb: null,
-  });
-  updateAnalyzeState();
-}
-
-function showPreview({ title, meta, thumb }) {
-  el.previewTitle.textContent = title || "Untitled";
-  el.previewMeta.textContent = meta || "";
-  if (thumb) {
-    el.previewThumb.src = thumb;
-    el.previewThumb.style.display = "block";
-    el.previewThumb.onerror = () => {
-      el.previewThumb.style.display = "none";
-    };
-  } else {
-    el.previewThumb.style.display = "none";
-  }
-  el.previewCard.hidden = false;
-}
-
-function updateAnalyzeState() {
-  const ready =
-    (state.sourceType === "url" && state.validated) ||
-    (state.sourceType === "upload" && state.selectedFile);
-  el.analyzeBtn.disabled = !ready;
-}
-
-function setFormBusy(busy) {
-  el.urlInput.disabled = busy;
-  el.checkBtn.disabled = busy;
-  el.fileInput.disabled = busy;
-  el.dropzone.style.pointerEvents = busy ? "none" : "";
-  el.dropzone.style.opacity = busy ? "0.5" : "";
-  if (busy) {
-    el.analyzeBtn.disabled = true;
-  } else {
-    el.analyzeBtn.textContent = "Analyze";
-    updateAnalyzeState();
-  }
-}
-
-function showFormError(msg) {
-  el.formError.textContent = msg;
-  el.formError.hidden = false;
-}
-function clearError() {
-  el.formError.hidden = true;
-}
-
-// ----------------------------------------------------------------------------
-// Start job
-// ----------------------------------------------------------------------------
-
-async function startJob() {
-  el.errorBanner.hidden = true;
-  el.analyzeBtn.disabled = true;
-  el.analyzeBtn.textContent = "Starting…";
-
-  const formData = new FormData();
-  if (state.sourceType === "url") {
-    formData.append("url", el.urlInput.value.trim());
-  } else {
-    formData.append("file", state.selectedFile);
-  }
-
-  try {
-    const res = await fetch("/api/jobs", { method: "POST", body: formData });
-    if (!res.ok) {
-      const err = await res.json();
-      if (res.status === 409) {
-        throw new Error(
-          "Still working on the last video — wait for it to finish first.",
-        );
-      }
-      throw new Error(err.detail || "Couldn't start processing");
-    }
-    const { job_id } = await res.json();
-    state.jobId = job_id;
-    if (state.sourceType === "url") {
-      state.lastStartedUrl = el.urlInput.value.trim();
-    }
-    // Show the real, known starting state (all stages pending) immediately,
-    // rather than waiting for the first poll response.
-    renderChain({
-      stages: Object.fromEntries(
-        state.stageDefs.map((s) => [s.key, "pending"]),
-      ),
-      current_stage: "ingestion",
-      status: "running",
-    });
-
-    el.chatLog.querySelectorAll(".chat-bubble").forEach((b) => b.remove());
-    el.chatEmpty.hidden = false;
-
-    el.signalChain.hidden = false;
-    setStatusChip("processing", "Processing");
-    setFormBusy(true);
-    el.analyzeBtn.textContent = "Processing…";
-    pollJob();
-  } catch (err) {
-    showFormError(err.message);
-    el.analyzeBtn.disabled = false;
-    el.analyzeBtn.textContent = "Analyze";
-  }
-}
-
-function pollJob() {
-  clearInterval(state.pollTimer);
-  state.pollTimer = setInterval(async () => {
-    try {
-      const res = await fetch(`/api/jobs/${state.jobId}`);
-      const job = await res.json();
-      renderChain(job);
-
-      if (job.status === "completed") {
-        clearInterval(state.pollTimer);
-        setStatusChip("completed", "Ready");
-        setFormBusy(false);
-        showResults(job);
-      } else if (job.status === "failed") {
-        clearInterval(state.pollTimer);
-        setStatusChip("failed", "Failed");
-        setFormBusy(false);
-        showError(job.error || "Processing failed.");
-      }
-    } catch (err) {
-      // transient network hiccup — keep polling
-    }
-  }, 1100);
-}
+// ============================================================
+// CHAIN RENDER
+// ============================================================
 
 function renderChain(job) {
-  state.stageDefs.forEach((stage) => {
-    const moduleEl = el.chainTrack.querySelector(`[data-key="${stage.key}"]`);
-    const status = job.stages[stage.key] || "pending";
-    moduleEl.dataset.status = status;
-
-    const icon = moduleEl.querySelector("[data-icon]");
-    const suffix = moduleEl.querySelector("[data-suffix]");
-    icon.textContent =
-      status === "done"
-        ? "✓"
-        : status === "running"
-          ? "→"
-          : status === "error"
-            ? "✕"
-            : "○";
-    suffix.hidden = status !== "running";
-  });
-
-  const active = state.stageDefs.find((s) => s.key === job.current_stage);
-  el.chainSubtext.textContent = active
-    ? active.desc
-    : job.status === "completed"
-      ? "Every stage completed successfully."
-      : "Six passes over the audio, each one built for a reason.";
-}
-
-function showError(message) {
-  el.errorBannerText.textContent = message;
-  el.errorBanner.hidden = false;
-}
-
-function setStatusChip(state_, text) {
-  el.statusChip.dataset.state = state_;
-  el.statusChipText.textContent = text;
-}
-
-// ----------------------------------------------------------------------------
-// Results
-// ----------------------------------------------------------------------------
-
-function showResults(job) {
-  state.results = job.results;
-  el.resultsSection.hidden = false;
-
-  const meta = job.results.metadata || {};
-  el.resultTitle.textContent = meta.title || "Untitled";
-  el.resultChannel.textContent = [meta.channel, formatDuration(meta.duration)]
-    .filter(Boolean)
-    .join(" · ");
-
-  setupPlayer(job);
-  renderOverview(job.results.summary);
-  renderChapters(job.results.timestamps);
-  renderTranscript(job.results.transcript);
-  el.chatEmpty.hidden = false;
-}
-
-function setupPlayer(job) {
-  if (job.video_id) {
-    el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
-    loadYouTubeAPI(() => {
-      state.ytPlayer = new YT.Player("ytPlayer", {
-        videoId: job.video_id,
-        playerVars: { rel: 0 },
-      });
-      state.ytReady = true;
-    });
-  } else if (job.media_url) {
-    el.videoEmbed.innerHTML = `<video id="localPlayer" src="${job.media_url}" controls></video>`;
-    state.mediaEl = document.getElementById("localPlayer");
-  } else {
-    el.videoEmbed.innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-tertiary);font-size:13px;">No preview available</div>`;
-  }
-}
-
-function loadYouTubeAPI(callback) {
-  if (window.YT && window.YT.Player) return callback();
-  const tag = document.createElement("script");
-  tag.src = "https://www.youtube.com/iframe_api";
-  document.head.appendChild(tag);
-  window.onYouTubeIframeAPIReady = callback;
-}
-
-function seekTo(timeLabel) {
-  const seconds = parseTimecode(timeLabel);
-  if (state.ytReady && state.ytPlayer) {
-    state.ytPlayer.seekTo(seconds, true);
-    state.ytPlayer.playVideo();
-  } else if (state.mediaEl) {
-    state.mediaEl.currentTime = seconds;
-    state.mediaEl.play();
-  }
-}
-
-function parseTimecode(label) {
-  const parts = label.split(":").map(Number);
-  return parts.length === 2
-    ? parts[0] * 60 + parts[1]
-    : parts[0] * 3600 + parts[1] * 60 + parts[2];
-}
-
-function renderOverview(summary) {
-  el.tldrText.textContent = summary.tldr || "";
-  el.keyPoints.innerHTML = (summary.key_points || [])
-    .map((point) => `<li>${escapeHtml(point)}</li>`)
-    .join("");
-}
-
-function renderChapters(topics) {
-  if (!topics || topics.length === 0) {
-    el.chaptersList.innerHTML = `
-      <li class="chapters-empty">
-        <div class="chapters-empty-icon">✦</div>
-        <div class="chapters-empty-content">
-          <div class="chapters-empty-title">Chapters unavailable</div>
-          <div class="chapters-empty-text">
-            We couldn't generate chapters for this video,
-            but you can still use the transcript, summary, and Q&A.
-          </div>
-        </div>
-      </li>
-    `;
+  if (!job) {
     return;
   }
 
-  el.chaptersList.innerHTML = topics
-    .map(
-      (t) => `
-      <li data-time="${t.start_time}">
-        <span class="time-badge">${t.start_time}</span>
-        <span class="chapter-topic">${escapeHtml(t.topic)}</span>
-      </li>`,
-    )
-    .join("");
+  const currentStage = job.current_stage || "";
+  const status = job.status || "";
 
-  el.chaptersList.querySelectorAll("li").forEach((li) => {
-    li.addEventListener("click", () => seekTo(li.dataset.time));
-  });
-}
+  updateProgress(
+    job.progress || 0
+  );
 
-function renderTranscript(segments) {
-  el.transcriptList.innerHTML = (segments || [])
-    .map(
-      (s) => `
-      <li data-text="${escapeHtml(s.text).toLowerCase()}">
-        <span class="time-badge" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>
-        <span class="transcript-text">${escapeHtml(s.text)}</span>
-      </li>`,
-    )
-    .join("");
-  el.transcriptList.querySelectorAll(".time-badge").forEach((badge) => {
-    badge.addEventListener("click", (e) => {
-      e.stopPropagation();
-      seekTo(badge.dataset.time);
-    });
-  });
-}
+  const stageElement = $("currentStage");
 
-function filterTranscript() {
-  const q = el.transcriptSearch.value.trim().toLowerCase();
-  el.transcriptList.querySelectorAll("li").forEach((li) => {
-    const matches = !q || li.dataset.text.includes(q);
-    li.classList.toggle("hidden-match", !matches);
-  });
-}
+  if (stageElement) {
+    stageElement.textContent = currentStage || status;
+  }
 
-// ----------------------------------------------------------------------------
-// Tabs
-// ----------------------------------------------------------------------------
+  const chainItems = document.querySelectorAll(
+    "[data-stage]"
+  );
 
-function switchTab(name) {
-  el.tabs
-    .querySelectorAll(".tab")
-    .forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
-  document
-    .querySelectorAll(".tab-panel")
-    .forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
-}
+  chainItems.forEach((item) => {
+    const stage = item.dataset.stage;
 
-// ----------------------------------------------------------------------------
-// Ask
-// ----------------------------------------------------------------------------
+    item.classList.remove(
+      "active",
+      "completed",
+      "failed"
+    );
 
-async function sendQuestion() {
-  const question = el.chatInput.value.trim();
-  if (!question || !state.jobId) return;
-
-  el.chatEmpty.hidden = true;
-  appendBubble("user", question);
-  el.chatInput.value = "";
-  el.chatSend.disabled = true;
-
-  const pending = appendBubble("assistant pending", "Thinking…");
-
-  try {
-    const res = await fetch(`/api/jobs/${state.jobId}/ask`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question }),
-    });
-
-    if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || "Couldn't get an answer.");
+    if (status === "failed") {
+      if (stage === currentStage) {
+        item.classList.add("failed");
+      }
+      return;
     }
 
-    const data = await res.json();
-    pending.classList.remove("pending");
-    pending.innerHTML = `${escapeHtml(data.answer)}${renderSourceChips(data.sources)}`;
-    bindSourceChips(pending);
-  } catch (err) {
-    pending.classList.remove("pending");
-    pending.textContent = err.message;
-  } finally {
-    el.chatSend.disabled = false;
-    el.chatLog.scrollTop = el.chatLog.scrollHeight;
+    if (stage === currentStage) {
+      item.classList.add("active");
+      return;
+    }
+
+    const stageOrder = [
+      "queued",
+      "starting",
+      "video_processing",
+      "generating_results",
+      "completed",
+    ];
+
+    const currentIndex = stageOrder.indexOf(currentStage);
+    const itemIndex = stageOrder.indexOf(stage);
+
+    if (
+      currentIndex !== -1 &&
+      itemIndex !== -1 &&
+      itemIndex < currentIndex
+    ) {
+      item.classList.add("completed");
+    }
+  });
+}
+
+
+// ============================================================
+// JOB MESSAGE
+// ============================================================
+
+function renderJobMessage(job) {
+  if (!job) {
+    return;
+  }
+
+  const statusText = $("jobStatus");
+
+  if (!statusText) {
+    return;
+  }
+
+  if (job.status === "queued") {
+    statusText.textContent = "Job queued";
+  } else if (job.status === "starting") {
+    statusText.textContent = "Starting pipeline...";
+  } else if (job.status === "processing") {
+    statusText.textContent = "Processing video...";
+  } else if (job.status === "completed") {
+    statusText.textContent = "Processing completed";
+  } else if (job.status === "failed") {
+    statusText.textContent = "Processing failed";
+  } else {
+    statusText.textContent = job.status || "";
   }
 }
 
-function appendBubble(className, text) {
-  const div = document.createElement("div");
-  div.className = `chat-bubble ${className}`;
-  div.textContent = text;
-  el.chatLog.appendChild(div);
-  el.chatLog.scrollTop = el.chatLog.scrollHeight;
-  return div;
+
+// ============================================================
+// SHOW RESULTS
+// ============================================================
+
+function showResults(job) {
+  if (!job) {
+    return;
+  }
+
+  const results = job.results || {};
+  const summaryElement = $("summary");
+
+  if (
+    summaryElement &&
+    results.summary !== null &&
+    results.summary !== undefined
+  ) {
+    if (typeof results.summary === "string") {
+      summaryElement.textContent = results.summary;
+    } else {
+      summaryElement.textContent = JSON.stringify(
+        results.summary,
+        null,
+        2
+      );
+    }
+  }
+
+  renderTimestamps(results.timestamps);
+
+  const resultsContainer = $("results");
+
+  if (resultsContainer) {
+    resultsContainer.classList.remove("hidden");
+  }
 }
 
-function renderSourceChips(sources) {
-  if (!sources || !sources.length) return "";
-  const chips = sources
-    .map(
-      (s) =>
-        `<span class="source-chip" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>`,
-    )
+
+// ============================================================
+// TIMESTAMPS
+// ============================================================
+
+function renderTimestamps(timestamps) {
+  const container = $("timestamps");
+
+  if (!container) {
+    return;
+  }
+
+  if (!timestamps) {
+    container.innerHTML = "";
+    return;
+  }
+
+  if (!Array.isArray(timestamps)) {
+    container.textContent =
+      typeof timestamps === "string"
+        ? timestamps
+        : JSON.stringify(
+            timestamps,
+            null,
+            2
+          );
+    return;
+  }
+
+  container.innerHTML = timestamps
+    .map((item) => {
+      if (item === null || item === undefined) {
+        return "";
+      }
+
+      if (typeof item === "string") {
+        return `
+          <div class="timestamp-item">
+            ${escapeHtml(item)}
+          </div>
+        `;
+      }
+
+      const start = item.start ?? item.timestamp ?? "";
+      const text = item.text ?? item.title ?? item.description ?? "";
+
+      return `
+        <div class="timestamp-item">
+          <span class="timestamp-time">
+            ${escapeHtml(start)}
+          </span>
+          <span class="timestamp-text">
+            ${escapeHtml(text)}
+          </span>
+        </div>
+      `;
+    })
     .join("");
-  return `<div class="chat-sources">${chips}</div>`;
 }
 
-function bindSourceChips(container) {
-  container.querySelectorAll(".source-chip").forEach((chip) => {
-    chip.addEventListener("click", () => seekTo(chip.dataset.time));
+
+// ============================================================
+// TRANSCRIPT
+// ============================================================
+
+async function fetchTranscript(jobId) {
+  try {
+    const response = await fetch(
+      `/api/jobs/${encodeURIComponent(jobId)}/transcript`
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const transcript = await response.json();
+    state.transcript = transcript;
+
+    return transcript;
+  } catch (error) {
+    console.error("Transcript fetch failed:", error);
+    return null;
+  }
+}
+
+
+// ============================================================
+// VIDEO
+// ============================================================
+
+function setupVideo(job) {
+  if (!job) {
+    return;
+  }
+
+  const video = $("videoPlayer");
+
+  if (!video) {
+    return;
+  }
+
+  if (job.media_url) {
+    video.src = job.media_url;
+    video.load();
+  }
+}
+
+
+// ============================================================
+// POLLING
+// ============================================================
+
+function stopPolling() {
+  if (state.pollTimer) {
+    clearTimeout(state.pollTimer);
+    state.pollTimer = null;
+  }
+}
+
+
+function schedulePoll(delay = POLL_INTERVAL_MS) {
+  stopPolling();
+
+  state.pollTimer = setTimeout(
+    pollOnce,
+    delay
+  );
+}
+
+
+async function pollOnce() {
+  if (!state.jobId) {
+    return;
+  }
+
+  const currentJobId = state.jobId;
+
+  try {
+    const response = await fetch(
+      `/api/jobs/${encodeURIComponent(currentJobId)}`
+    );
+
+    if (response.status === 404) {
+      stopPolling();
+      setStatus("Job no longer exists.");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const job = await response.json();
+
+    // Ignore an old response if the
+    // user already started a fresh job.
+    if (currentJobId !== state.jobId) {
+      return;
+    }
+
+    renderChain(job);
+    renderJobMessage(job);
+    setupVideo(job);
+
+    if (job.status === "completed") {
+      stopPolling();
+      setStatus("Video processing completed.");
+
+      await fetchTranscript(currentJobId);
+      showResults(job);
+
+      const askSection = $("askSection");
+
+      if (askSection) {
+        askSection.classList.remove("hidden");
+      }
+
+      return;
+    }
+
+    if (job.status === "failed") {
+      stopPolling();
+      setStatus(
+        job.error || "Video processing failed."
+      );
+      return;
+    }
+
+    schedulePoll(POLL_INTERVAL_MS);
+
+  } catch (error) {
+    console.error("Polling error:", error);
+
+    if (currentJobId !== state.jobId) {
+      return;
+    }
+
+    schedulePoll(POLL_ERROR_RETRY_MS);
+  }
+}
+
+
+function pollJob() {
+  stopPolling();
+
+  if (!state.jobId) {
+    return;
+  }
+
+  pollOnce();
+}
+
+
+// ============================================================
+// CREATE URL JOB
+// ============================================================
+
+async function submitUrl(url) {
+  if (state.startingJob) {
+    return;
+  }
+
+  const cleanUrl = String(url || "").trim();
+
+  if (!cleanUrl) {
+    setStatus("Please enter a URL.");
+    return;
+  }
+
+  state.startingJob = true;
+
+  try {
+    setStatus("Validating new URL...");
+
+    /*
+     * IMPORTANT:
+     * We DO NOT clear the old state here.
+     *
+     * Old video/result stays visible until
+     * the backend successfully creates the
+     * new job.
+     */
+
+    const response = await fetch("/api/jobs", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        url: cleanUrl,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.detail || "Could not create new job."
+      );
+    }
+
+    /*
+     * NEW JOB EXISTS NOW.
+     *
+     * Backend has already:
+     * 1. created the new job
+     * 2. switched ACTIVE_JOB_ID
+     * 3. deleted old artifacts
+     *
+     * Now frontend switches to the new
+     * job state.
+     */
+
+    state.jobId = data.job_id;
+    state.transcript = null;
+
+    updateProgress(0);
+    setStatus("New job started...");
+
+    renderChain(data);
+    renderJobMessage(data);
+
+    if (data.validation) {
+      updateVideoMetadata(data.validation);
+    }
+
+    /*
+     * Hide old result only AFTER new job
+     * creation succeeded.
+     */
+
+    clearResultUI();
+
+    /*
+     * Start the actual pipeline.
+     */
+
+    await startJob(data.job_id);
+
+  } catch (error) {
+    console.error("Could not start new job:", error);
+
+    /*
+     * Old result/state remains intact
+     * because we never cleared it before
+     * successful job creation.
+     */
+
+    setStatus(
+      error.message || "Could not start new job."
+    );
+
+  } finally {
+    state.startingJob = false;
+  }
+}
+
+
+// ============================================================
+// START JOB PIPELINE
+// ============================================================
+
+async function startJob(jobId) {
+  const response = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/start`,
+    {
+      method: "POST",
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      data.detail || "Could not start pipeline."
+    );
+  }
+
+  if (jobId !== state.jobId) {
+    return;
+  }
+
+  renderChain(data);
+  renderJobMessage(data);
+
+  pollJob();
+}
+
+
+// ============================================================
+// CLEAR RESULT UI
+// ============================================================
+
+function clearResultUI() {
+  const results = $("results");
+
+  if (results) {
+    results.classList.add("hidden");
+  }
+
+  const askSection = $("askSection");
+
+  if (askSection) {
+    askSection.classList.add("hidden");
+  }
+
+  const summary = $("summary");
+
+  if (summary) {
+    summary.textContent = "";
+  }
+
+  const timestamps = $("timestamps");
+
+  if (timestamps) {
+    timestamps.innerHTML = "";
+  }
+}
+
+
+// ============================================================
+// VIDEO METADATA
+// ============================================================
+
+function updateVideoMetadata(validation) {
+  if (!validation) {
+    return;
+  }
+
+  const titleElement = $("videoTitle");
+
+  if (titleElement && validation.title) {
+    titleElement.textContent = validation.title;
+  }
+
+  const thumbnail = $("videoThumbnail");
+
+  if (thumbnail && validation.thumbnail) {
+    thumbnail.src = validation.thumbnail;
+  }
+
+  const duration = $("videoDuration");
+
+  if (duration && validation.duration !== undefined) {
+    duration.textContent = formatDuration(validation.duration);
+  }
+}
+
+
+function formatDuration(seconds) {
+  const value = Number(seconds);
+
+  if (!Number.isFinite(value)) {
+    return "";
+  }
+
+  const hours = Math.floor(value / 3600);
+  const minutes = Math.floor((value % 3600) / 60);
+  const secs = Math.floor(value % 60);
+
+  if (hours > 0) {
+    return [
+      String(hours).padStart(2, "0"),
+      String(minutes).padStart(2, "0"),
+      String(secs).padStart(2, "0"),
+    ].join(":");
+  }
+
+  return [
+    String(minutes).padStart(2, "0"),
+    String(secs).padStart(2, "0"),
+  ].join(":");
+}
+
+
+// ============================================================
+// ASK QUESTION
+// ============================================================
+
+async function askQuestion(question) {
+  if (!state.jobId) {
+    setStatus("No completed video available.");
+    return;
+  }
+
+  const cleanQuestion = String(question || "").trim();
+
+  if (!cleanQuestion) {
+    return;
+  }
+
+  const answerElement = $("answer");
+
+  if (answerElement) {
+    answerElement.textContent = "Thinking...";
+  }
+
+  try {
+    const response = await fetch(
+      `/api/jobs/${encodeURIComponent(state.jobId)}/ask`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question: cleanQuestion,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(
+        data.detail || "Question answering failed."
+      );
+    }
+
+    if (answerElement) {
+      if (typeof data === "string") {
+        answerElement.textContent = data;
+      } else {
+        const answer =
+          data.answer ??
+          data.response ??
+          data.result ??
+          data;
+
+        answerElement.textContent =
+          typeof answer === "string"
+            ? answer
+            : JSON.stringify(answer, null, 2);
+      }
+    }
+
+  } catch (error) {
+    console.error("Ask failed:", error);
+
+    if (answerElement) {
+      answerElement.textContent =
+        error.message || "Question answering failed.";
+    }
+  }
+}
+
+
+// ============================================================
+// URL FORM
+// ============================================================
+
+function setupUrlForm() {
+  const form = $("urlForm");
+  const input = $("urlInput");
+
+  if (!form || !input) {
+    return;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await submitUrl(input.value);
   });
 }
 
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
 
-function formatDuration(seconds) {
-  if (!seconds && seconds !== 0) return "";
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-  return `${m}:${String(s).padStart(2, "0")}`;
+// ============================================================
+// UPLOAD FORM
+// ============================================================
+
+function setupUploadForm() {
+  const form = $("uploadForm");
+  const fileInput = $("fileInput");
+
+  if (!form || !fileInput) {
+    return;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    if (!fileInput.files || !fileInput.files.length) {
+      setStatus("Please select a video file.");
+      return;
+    }
+
+    if (state.startingJob) {
+      return;
+    }
+
+    state.startingJob = true;
+
+    try {
+      setStatus("Uploading video...");
+
+      const formData = new FormData();
+      formData.append("file", fileInput.files[0]);
+
+      const response = await fetch("/api/jobs/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.detail || "Upload failed."
+        );
+      }
+
+      state.jobId = data.job_id;
+      state.transcript = null;
+
+      clearResultUI();
+      updateProgress(0);
+
+      renderChain(data);
+      renderJobMessage(data);
+
+      await startJob(data.job_id);
+
+    } catch (error) {
+      console.error("Upload failed:", error);
+
+      setStatus(
+        error.message || "Upload failed."
+      );
+
+    } finally {
+      state.startingJob = false;
+    }
+  });
 }
 
-function formatBytes(bytes) {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+// ============================================================
+// ASK FORM
+// ============================================================
+
+function setupAskForm() {
+  const form = $("askForm");
+  const input = $("questionInput");
+
+  if (!form || !input) {
+    return;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await askQuestion(input.value);
+  });
 }
 
-function escapeHtml(str) {
-  const div = document.createElement("div");
-  div.textContent = str ?? "";
-  return div.innerHTML;
-}
 
-init();
+// ============================================================
+// INITIALIZATION
+// ============================================================
+
+document.addEventListener("DOMContentLoaded", () => {
+  setupUrlForm();
+  setupUploadForm();
+  setupAskForm();
+
+  setStatus("Ready.");
+});

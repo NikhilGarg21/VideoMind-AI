@@ -39,7 +39,6 @@ from pydantic import BaseModel
 
 from src.logger import logger
 
-
 app = FastAPI(title="VideoMind API")
 
 
@@ -60,9 +59,7 @@ UPLOAD_DIR = os.path.join(
 
 app.mount(
     "/static",
-    StaticFiles(
-        directory=STATIC_DIR
-    ),
+    StaticFiles(directory=STATIC_DIR),
     name="static",
 )
 
@@ -138,10 +135,7 @@ def new_job(
             "source_label": source_label,
             "status": "queued",
             "current_stage": None,
-            "stages": {
-                stage["key"]: "pending"
-                for stage in STAGE_DEFS
-            },
+            "stages": {stage["key"]: "pending" for stage in STAGE_DEFS},
             "error": None,
             "warning": None,
             "video_id": None,
@@ -163,7 +157,8 @@ def prune_finished_jobs_locked() -> bool:
     finished_ids = [
         job_id
         for job_id, job in JOBS.items()
-        if job["status"] in {
+        if job["status"]
+        in {
             "completed",
             "failed",
         }
@@ -221,10 +216,7 @@ def set_failed(
         job["status"] = "failed"
         job["error"] = message
 
-    logger.error(
-        f"Job {job_id} failed at stage "
-        f"{key}: {message}"
-    )
+    logger.error(f"Job {job_id} failed at stage " f"{key}: {message}")
 
 
 def public_job_view(
@@ -232,20 +224,13 @@ def public_job_view(
 ) -> dict:
     """Strip internal objects before sending to the client."""
 
-    view = {
-        key: value
-        for key, value in job.items()
-        if key != "qa_pipeline"
-    }
+    view = {key: value for key, value in job.items() if key != "qa_pipeline"}
 
     if job.get("results"):
 
         view["results"] = {
             **job["results"],
-            "qa_ready": (
-                job.get("qa_pipeline")
-                is not None
-            ),
+            "qa_ready": (job.get("qa_pipeline") is not None),
         }
 
     return view
@@ -271,18 +256,11 @@ def extract_duration_from_ffmpeg_stderr(
     )
 
     if not match:
-        raise ValueError(
-            "Could not determine audio duration "
-            "from ffmpeg output"
-        )
+        raise ValueError("Could not determine audio duration " "from ffmpeg output")
 
     hours, minutes, seconds = match.groups()
 
-    return (
-        int(hours) * 3600
-        + int(minutes) * 60
-        + float(seconds)
-    )
+    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def ingest_uploaded_file(
@@ -313,13 +291,9 @@ def ingest_uploaded_file(
 
     config = pipeline.audio_ingestion_config
 
-    audio_ingestion = AudioIngestion(
-        audio_ingestion_config=config
-    )
+    audio_ingestion = AudioIngestion(audio_ingestion_config=config)
 
-    output_dir = os.path.dirname(
-        config.audio_path
-    )
+    output_dir = os.path.dirname(config.audio_path)
 
     if output_dir:
         os.makedirs(
@@ -346,10 +320,7 @@ def ingest_uploaded_file(
 
     if result.returncode != 0:
 
-        raise RuntimeError(
-            f"ffmpeg failed: "
-            f"{result.stderr}"
-        )
+        raise RuntimeError(f"ffmpeg failed: " f"{result.stderr}")
 
     # The uploaded source video is no longer
     # needed once the MP3 conversion succeeds.
@@ -359,35 +330,19 @@ def ingest_uploaded_file(
 
             os.remove(saved_path)
 
-            logger.info(
-                f"Deleted uploaded source file: "
-                f"{saved_path}"
-            )
+            logger.info(f"Deleted uploaded source file: " f"{saved_path}")
 
     except Exception as e:
 
-        logger.warning(
-            f"Could not delete uploaded source "
-            f"file {saved_path}: {e}"
-        )
+        logger.warning(f"Could not delete uploaded source " f"file {saved_path}: {e}")
 
-    duration = (
-        extract_duration_from_ffmpeg_stderr(
-            result.stderr
-        )
-    )
+    duration = extract_duration_from_ffmpeg_stderr(result.stderr)
 
-    audio_chunks_dir = (
-        audio_ingestion.create_audio_chunks(
-            config.audio_path
-        )
-    )
+    audio_chunks_dir = audio_ingestion.create_audio_chunks(config.audio_path)
 
-    chunk_durations = (
-        audio_ingestion.compute_chunk_durations(
-            duration,
-            config.chunk_duration,
-        )
+    chunk_durations = audio_ingestion.compute_chunk_durations(
+        duration,
+        config.chunk_duration,
     )
 
     video_metadata = {
@@ -404,19 +359,15 @@ def ingest_uploaded_file(
         "webpage_url": None,
     }
 
-    video_metadata_file_path = (
-        save_json(
-            video_metadata,
-            config.video_metadata_file_path,
-        )
+    video_metadata_file_path = save_json(
+        video_metadata,
+        config.video_metadata_file_path,
     )
 
     return AudioIngestionArtifact(
         audio_file_path=config.audio_path,
         audio_chunks_dir=audio_chunks_dir,
-        video_metadata_file_path=(
-            video_metadata_file_path
-        ),
+        video_metadata_file_path=(video_metadata_file_path),
         chunk_durations=chunk_durations,
     )
 
@@ -472,46 +423,31 @@ def run_job(
 
             if source_type == "url":
 
-                ingestion_artifact = (
-                    pipeline.start_audio_ingestion(
-                        video_url=source_value
-                    )
+                ingestion_artifact = pipeline.start_audio_ingestion(
+                    video_url=source_value
                 )
 
-                video_meta = load_json(
-                    ingestion_artifact
-                    .video_metadata_file_path
-                )
+                video_meta = load_json(ingestion_artifact.video_metadata_file_path)
 
                 with JOBS_LOCK:
 
-                    JOBS[job_id]["video_id"] = (
-                        video_meta.get("id")
-                    )
+                    JOBS[job_id]["video_id"] = video_meta.get("id")
 
             else:
 
-                ingestion_artifact = (
-                    ingest_uploaded_file(
-                        job_id=job_id,
-                        saved_path=source_value,
-                        original_filename=(
-                            original_filename
-                        ),
-                        pipeline=pipeline,
-                    )
+                ingestion_artifact = ingest_uploaded_file(
+                    job_id=job_id,
+                    saved_path=source_value,
+                    original_filename=(original_filename),
+                    pipeline=pipeline,
                 )
 
-                video_meta = load_json(
-                    ingestion_artifact
-                    .video_metadata_file_path
-                )
+                video_meta = load_json(ingestion_artifact.video_metadata_file_path)
 
                 with JOBS_LOCK:
 
                     JOBS[job_id]["media_url"] = (
-                        f"/media/{job_id}/"
-                        f"{os.path.basename(source_value)}"
+                        f"/media/{job_id}/" f"{os.path.basename(source_value)}"
                     )
 
             set_stage(
@@ -530,10 +466,8 @@ def run_job(
                 "running",
             )
 
-            transcription_artifact = (
-                pipeline.start_audio_transcription(
-                    ingestion_artifact
-                )
+            transcription_artifact = pipeline.start_audio_transcription(
+                ingestion_artifact
             )
 
             set_stage(
@@ -552,10 +486,8 @@ def run_job(
                 "running",
             )
 
-            text_processing_artifact = (
-                pipeline.start_text_processing(
-                    transcription_artifact
-                )
+            text_processing_artifact = pipeline.start_text_processing(
+                transcription_artifact
             )
 
             set_stage(
@@ -589,10 +521,8 @@ def run_job(
 
             try:
 
-                timestamp_artifact = (
-                    pipeline.start_timestamp_generation(
-                        transcription_artifact
-                    )
+                timestamp_artifact = pipeline.start_timestamp_generation(
+                    transcription_artifact
                 )
 
                 set_stage(
@@ -603,9 +533,7 @@ def run_job(
 
             except Exception as e:
 
-                stage_errors[
-                    "timestamp"
-                ] = str(e)
+                stage_errors["timestamp"] = str(e)
 
                 set_stage(
                     job_id,
@@ -615,10 +543,8 @@ def run_job(
 
             try:
 
-                summary_artifact = (
-                    pipeline.start_summary_generation(
-                        transcription_artifact
-                    )
+                summary_artifact = pipeline.start_summary_generation(
+                    transcription_artifact
                 )
 
                 set_stage(
@@ -629,9 +555,7 @@ def run_job(
 
             except Exception as e:
 
-                stage_errors[
-                    "summary"
-                ] = str(e)
+                stage_errors["summary"] = str(e)
 
                 set_stage(
                     job_id,
@@ -642,10 +566,7 @@ def run_job(
             if stage_errors:
 
                 logger.warning(
-                    "Non-critical stage failures: "
-                    + ", ".join(
-                        stage_errors.keys()
-                    )
+                    "Non-critical stage failures: " + ", ".join(stage_errors.keys())
                 )
 
             # --------------------------------------------------------------
@@ -658,10 +579,8 @@ def run_job(
                 "running",
             )
 
-            embedding_artifact = (
-                pipeline.start_embedding_indexing(
-                    text_processing_artifact
-                )
+            embedding_artifact = pipeline.start_embedding_indexing(
+                text_processing_artifact
             )
 
             set_stage(
@@ -684,11 +603,7 @@ def run_job(
             # QA PIPELINE
             # --------------------------------------------------------------
 
-            qa_pipeline = QAPipeline(
-                embedding_artifact=(
-                    embedding_artifact
-                )
-            )
+            qa_pipeline = QAPipeline(embedding_artifact=(embedding_artifact))
 
             # --------------------------------------------------------------
             # LOAD RESULTS
@@ -698,33 +613,22 @@ def run_job(
 
             if timestamp_artifact is not None:
 
-                timestamps = load_json(
-                    timestamp_artifact
-                    .timestamp_file_path
-                )["topics"]
+                timestamps = load_json(timestamp_artifact.timestamp_file_path)["topics"]
 
             summary = {}
 
             if summary_artifact is not None:
 
-                summary = load_json(
-                    summary_artifact
-                    .summary_file_path
-                )
+                summary = load_json(summary_artifact.summary_file_path)
 
-            segments = load_json(
-                transcription_artifact
-                .transcript_file_path
-            )["segments"]
+            segments = load_json(transcription_artifact.transcript_file_path)[
+                "segments"
+            ]
 
             transcript = [
                 {
-                    "start_time": format_timestamp(
-                        seg["start"]
-                    ),
-                    "end_time": format_timestamp(
-                        seg["end"]
-                    ),
+                    "start_time": format_timestamp(seg["start"]),
+                    "end_time": format_timestamp(seg["end"]),
                     "text": seg["text"],
                 }
                 for seg in segments
@@ -738,9 +642,7 @@ def run_job(
 
                 job = JOBS[job_id]
 
-                job["qa_pipeline"] = (
-                    qa_pipeline
-                )
+                job["qa_pipeline"] = qa_pipeline
 
                 job["status"] = "completed"
                 job["current_stage"] = None
@@ -752,9 +654,7 @@ def run_job(
                     "transcript": transcript,
                 }
 
-            logger.info(
-                f"Job {job_id} completed successfully"
-            )
+            logger.info(f"Job {job_id} completed successfully")
 
             # Release temporary references.
             pipeline = None
@@ -778,23 +678,12 @@ def run_job(
                 job["status"] = "failed"
                 job["error"] = str(e)
 
-            current = job.get(
-                "current_stage"
-            )
+            current = job.get("current_stage")
 
-            if (
-                current
-                and job["stages"].get(
-                    current
-                ) == "running"
-            ):
-                job["stages"][current] = (
-                    "error"
-                )
+            if current and job["stages"].get(current) == "running":
+                job["stages"][current] = "error"
 
-        logger.error(
-            f"Job {job_id} failed: {e}"
-        )
+        logger.error(f"Job {job_id} failed: {e}")
 
     finally:
 
@@ -808,9 +697,7 @@ def run_job(
 
             BUSY["active"] = False
 
-            should_collect = (
-                prune_finished_jobs_locked()
-            )
+            should_collect = prune_finished_jobs_locked()
 
         if should_collect:
 
@@ -838,9 +725,7 @@ def index():
 def get_config():
     """Return stage definitions."""
 
-    return {
-        "stages": STAGE_DEFS
-    }
+    return {"stages": STAGE_DEFS}
 
 
 # --------------------------------------------------------------------------
@@ -870,16 +755,11 @@ def validate_url(
             "verbose": True,
             "noplaylist": True,
             "skip_download": True,
-
             "cookiefile": os.getenv(
                 "YOUTUBE_COOKIE_FILE",
                 "/tmp/cookies.txt",
             ),
-
-            "js_runtimes": {
-                "node": {}
-            },
-
+            "js_runtimes": {"node": {}},
             "extractor_args": {
                 "youtube": {
                     "player_client": [
@@ -887,17 +767,11 @@ def validate_url(
                         "web_safari",
                     ]
                 },
-                "youtubepot-bgutilhttp": {
-                    "base_url": [
-                        "http://127.0.0.1:4416"
-                    ]
-                },
+                "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
             },
         }
 
-        with yt_dlp.YoutubeDL(
-            opts
-        ) as ydl:
+        with yt_dlp.YoutubeDL(opts) as ydl:
 
             info = ydl.extract_info(
                 payload.url,
@@ -906,19 +780,14 @@ def validate_url(
 
         if info is None:
 
-            raise ValueError(
-                "Could not read this link"
-            )
+            raise ValueError("Could not read this link")
 
         return {
             "valid": True,
             "title": info.get("title"),
             "duration": info.get("duration"),
             "thumbnail": info.get("thumbnail"),
-            "channel": (
-                info.get("channel")
-                or info.get("uploader")
-            ),
+            "channel": (info.get("channel") or info.get("uploader")),
             "video_id": info.get("id"),
         }
 
@@ -949,10 +818,7 @@ def create_job(
 
         raise HTTPException(
             status_code=400,
-            detail=(
-                "Provide a video URL or "
-                "upload a video file"
-            ),
+            detail=("Provide a video URL or " "upload a video file"),
         )
 
     with JOBS_LOCK:
@@ -961,10 +827,7 @@ def create_job(
 
             raise HTTPException(
                 status_code=409,
-                detail=(
-                    "Already processing a video — "
-                    "wait for it to finish"
-                ),
+                detail=("Already processing a video — " "wait for it to finish"),
             )
 
         BUSY["active"] = True
@@ -992,9 +855,7 @@ def create_job(
                 daemon=True,
             ).start()
 
-            return {
-                "job_id": job_id
-            }
+            return {"job_id": job_id}
 
         # --------------------------------------------------------------
         # UPLOADED FILE
@@ -1041,9 +902,7 @@ def create_job(
             daemon=True,
         ).start()
 
-        return {
-            "job_id": job_id
-        }
+        return {"job_id": job_id}
 
     except Exception as e:
 
@@ -1053,9 +912,7 @@ def create_job(
 
         raise HTTPException(
             status_code=500,
-            detail=(
-                f"Couldn't start processing: {e}"
-            ),
+            detail=(f"Couldn't start processing: {e}"),
         )
 
 
@@ -1117,25 +974,18 @@ def ask_question(
                 detail="Job not found",
             )
 
-        qa_pipeline = job.get(
-            "qa_pipeline"
-        )
+        qa_pipeline = job.get("qa_pipeline")
 
     if qa_pipeline is None:
 
         raise HTTPException(
             status_code=409,
-            detail=(
-                "This video isn't ready "
-                "for questions yet"
-            ),
+            detail=("This video isn't ready " "for questions yet"),
         )
 
     try:
 
-        return qa_pipeline.ask(
-            payload.question
-        )
+        return qa_pipeline.ask(payload.question)
 
     except Exception as e:
 
@@ -1161,9 +1011,7 @@ def ask_question(
 # --------------------------------------------------------------------------
 
 
-@app.get(
-    "/media/{job_id}/{filename}"
-)
+@app.get("/media/{job_id}/{filename}")
 def get_media(
     job_id: str,
     filename: str,
@@ -1176,15 +1024,11 @@ def get_media(
         filename,
     )
 
-    if not os.path.exists(
-        file_path
-    ):
+    if not os.path.exists(file_path):
 
         raise HTTPException(
             status_code=404,
             detail="File not found",
         )
 
-    return FileResponse(
-        file_path
-    )
+    return FileResponse(file_path)

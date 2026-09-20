@@ -1,337 +1,1791 @@
+"""
+VideoMind API — FastAPI backend for the video understanding pipeline.
+
+Lightweight deployment version:
+- Heavy pipeline imports remain lazy.
+- Up to 2 users can process videos concurrently.
+- Each job gets its own artifact directory.
+- Old finished artifacts are cleaned when the same user starts a fresh job.
+- Uploaded source files are deleted after successful audio chunking.
+- QAPipeline remains available for completed-job Q&A.
+- Timestamp and summary stages run sequentially to reduce peak memory.
+- yt-dlp validation results are temporarily reused by the real download.
+"""
+
+from __future__ import annotations
+
+import gc
 import os
-import sys
+import shutil
 import subprocess
+import threading
+import uuid
 
-import yt_dlp
+from typing import Optional
 
-from src.utils.main_utils import save_json
-from src.entity.config_entity import AudioIngestionConfig
-from src.entity.artifact_entity import AudioIngestionArtifact
-from src.exception import MyException
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Form,
+    HTTPException,
+    Request,
+)
+
+from fastapi.responses import (
+    FileResponse,
+    JSONResponse,
+)
+
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
 from src.logger import logger
 
 
-class AudioIngestion:
-    """Handles video URL validation, audio download, and audio chunking."""
+app = FastAPI(
+    title="VideoMind API"
+)
 
-    def __init__(
-        self,
-        audio_ingestion_config: AudioIngestionConfig,
-    ):
-        """
-        Initialize AudioIngestion with its configuration.
 
-        Args:
-            audio_ingestion_config: Configuration object holding paths for
-                the downloaded audio file, chunk output directory, and
-                video metadata file.
-        """
-        self.audio_ingestion_config = audio_ingestion_config
+# --------------------------------------------------------------------------
+# Paths
+# --------------------------------------------------------------------------
 
-    def download_audio(
-        self,
-        video_url: str,
-    ) -> tuple[str, dict]:
-        """
-        Validate the video URL, download its audio, and return metadata.
+STATIC_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "static",
+)
 
-        Args:
-            video_url: The source video URL.
+UPLOAD_DIR = os.path.join(
+    "artifact",
+    "uploads",
+)
 
-        Returns:
-            Tuple of downloaded audio path and raw yt-dlp info dict.
+JOB_ARTIFACT_DIR = os.path.join(
+    "artifact",
+    "jobs",
+)
 
-        Raises:
-            MyException: If download or validation fails.
-        """
-        try:
-            logger.info("Starting audio validation and download")
 
-            output_dir = os.path.dirname(self.audio_ingestion_config.audio_path)
+os.makedirs(
+    JOB_ARTIFACT_DIR,
+    exist_ok=True,
+)
 
-            if output_dir:
-                os.makedirs(
-                    output_dir,
-                    exist_ok=True,
-                )
+os.makedirs(
+    UPLOAD_DIR,
+    exist_ok=True,
+)
 
-            outtmpl_base = os.path.splitext(self.audio_ingestion_config.audio_path)[0]
 
-            ydl_opts = {
-                "format": "ba/b",
-                "outtmpl": (outtmpl_base + ".%(ext)s"),
-                "noplaylist": True,
-                "quiet": False,
-                "no_warnings": False,
-                "verbose": True,
-                "cookiefile": os.getenv(
-                    "YOUTUBE_COOKIE_FILE",
-                    "cookies.txt",
-                ),
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": [
-                            "mweb",
-                            "web_safari",
-                        ]
-                    },
-                    "youtubepot-bgutilhttp": {"base_url": ["http://127.0.0.1:4416"]},
-                },
-                "js_runtimes": {"node": {}},
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }
-                ],
-            }
+app.mount(
+    "/static",
+    StaticFiles(
+        directory=STATIC_DIR
+    ),
+    name="static",
+)
 
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
 
-                info = ydl.extract_info(
-                    video_url,
-                    download=True,
-                )
+# --------------------------------------------------------------------------
+# Concurrency
+# --------------------------------------------------------------------------
 
-            if info is None:
-                raise ValueError(f"Could not extract info for URL: {video_url}")
+# Allow two heavy pipelines simultaneously.
+MAX_CONCURRENT_PIPELINES = 2
+
+# Do not allow more than two jobs to be queued/running.
+MAX_OPEN_JOBS = 2
+
+PIPELINE_SEMAPHORE = (
+    threading.BoundedSemaphore(
+        MAX_CONCURRENT_PIPELINES
+    )
+)
+
+
+# --------------------------------------------------------------------------
+# Client identity
+# --------------------------------------------------------------------------
+
+CLIENT_COOKIE_NAME = (
+    "videomind_client_id"
+)
+
+
+# Keep only two finished jobs globally.
+# Per-client cleanup happens first, so normally
+# each active user keeps their latest finished job.
+MAX_FINISHED_JOBS = 2
+
+
+# --------------------------------------------------------------------------
+# Pipeline stage definitions
+# --------------------------------------------------------------------------
+
+STAGE_DEFS = [
+    {
+        "key": "ingestion",
+        "label": "Ingest",
+        "desc": "Pulling the audio track from the source.",
+    },
+    {
+        "key": "transcription",
+        "label": "Transcribe",
+        "desc": "Listening to the audio, word by word, with exact timing.",
+    },
+    {
+        "key": "text_processing",
+        "label": "Structure",
+        "desc": "Splitting the transcript into meaning-sized pieces.",
+    },
+    {
+        "key": "timestamp",
+        "label": "Chapters",
+        "desc": "Finding where the topic actually changes — not just every N minutes.",
+    },
+    {
+        "key": "summary",
+        "label": "Summary",
+        "desc": "Writing the TL;DR and checking its numbers against the transcript.",
+    },
+    {
+        "key": "embedding",
+        "label": "Index",
+        "desc": "Making every moment searchable, so you can ask it anything.",
+    },
+]
+
+
+# --------------------------------------------------------------------------
+# In-memory job store
+# --------------------------------------------------------------------------
+
+JOBS: dict = {}
+
+JOBS_LOCK = threading.Lock()
+
+
+# --------------------------------------------------------------------------
+# Client helpers
+# --------------------------------------------------------------------------
+
+def get_or_create_client_id(
+    request: Request,
+) -> tuple[str, bool]:
+    """
+    Return the browser/client id.
+
+    Returns:
+        (client_id, is_new)
+    """
+
+    existing_id = (
+        request.cookies.get(
+            CLIENT_COOKIE_NAME
+        )
+    )
+
+    if existing_id:
+        return (
+            existing_id,
+            False,
+        )
+
+    return (
+        uuid.uuid4().hex,
+        True,
+    )
+
+
+# --------------------------------------------------------------------------
+# Artifact helpers
+# --------------------------------------------------------------------------
+
+def safe_artifact_path(
+    path: str,
+) -> bool:
+    """
+    Ensure a path is inside ./artifact.
+    """
+
+    try:
+
+        artifact_base = os.path.abspath(
+            "artifact"
+        )
+
+        target_path = os.path.abspath(
+            path
+        )
+
+        return (
+            os.path.commonpath(
+                [
+                    artifact_base,
+                    target_path,
+                ]
+            )
+            == artifact_base
+        )
+
+    except Exception:
+        return False
+
+
+def cleanup_job_resources(
+    job: dict,
+) -> None:
+    """
+    Remove all disk resources belonging to one job.
+    """
+
+    try:
+
+        artifact_root = job.get(
+            "artifact_root"
+        )
+
+        if artifact_root:
+
+            artifact_root = os.path.abspath(
+                artifact_root
+            )
+
+            if safe_artifact_path(
+                artifact_root
+            ):
+
+                if os.path.exists(
+                    artifact_root
+                ):
+
+                    shutil.rmtree(
+                        artifact_root,
+                        ignore_errors=True,
+                    )
+
+                    logger.info(
+                        f"Deleted job artifacts: "
+                        f"{artifact_root}"
+                    )
+
+        upload_dir = os.path.join(
+            UPLOAD_DIR,
+            job["id"],
+        )
+
+        if os.path.exists(
+            upload_dir
+        ):
+
+            shutil.rmtree(
+                upload_dir,
+                ignore_errors=True,
+            )
 
             logger.info(
-                f"URL validated: " f"{info.get('extractor')} - " f"{info.get('title')}"
+                f"Deleted uploaded files: "
+                f"{upload_dir}"
             )
 
-            final_path = outtmpl_base + ".mp3"
+    except Exception as e:
 
-            if not os.path.exists(final_path):
-                raise FileNotFoundError(
-                    "Expected audio file not found at " f"{final_path}"
+        logger.warning(
+            f"Could not fully clean job "
+            f"{job.get('id')}: {e}"
+        )
+
+
+def prune_finished_jobs_locked() -> list:
+    """
+    Keep only the newest finished/failed jobs.
+
+    Caller must hold JOBS_LOCK.
+
+    Returns:
+        Jobs that were removed and should have
+        their disk resources cleaned.
+    """
+
+    finished_jobs = [
+        job
+        for job in JOBS.values()
+        if job["status"]
+        in {
+            "completed",
+            "failed",
+        }
+    ]
+
+    finished_jobs.sort(
+        key=lambda job: job.get(
+            "created_at",
+            0,
+        )
+    )
+
+    removed_jobs = []
+
+    while (
+        len(finished_jobs)
+        > MAX_FINISHED_JOBS
+    ):
+
+        old_job = finished_jobs.pop(
+            0
+        )
+
+        old_job_id = old_job["id"]
+
+        removed = JOBS.pop(
+            old_job_id,
+            None,
+        )
+
+        if removed:
+
+            removed["qa_pipeline"] = None
+            removed["results"] = None
+
+            removed_jobs.append(
+                removed
+            )
+
+    return removed_jobs
+
+
+def cleanup_previous_finished_jobs_for_client(
+    client_id: str,
+) -> None:
+    """
+    When a user starts a fresh job, remove that user's
+    old finished/failed jobs.
+
+    This prevents one user's new URL from deleting
+    another user's artifacts.
+    """
+
+    removed_jobs = []
+
+    with JOBS_LOCK:
+
+        old_ids = [
+            job_id
+            for job_id, job in JOBS.items()
+            if job.get("client_id")
+            == client_id
+            and job["status"]
+            in {
+                "completed",
+                "failed",
+            }
+        ]
+
+        for job_id in old_ids:
+
+            old_job = JOBS.pop(
+                job_id,
+                None,
+            )
+
+            if old_job:
+
+                old_job["qa_pipeline"] = None
+                old_job["results"] = None
+
+                removed_jobs.append(
+                    old_job
                 )
 
-            logger.info("Audio download completed")
+    for job in removed_jobs:
+        cleanup_job_resources(
+            job
+        )
 
-            return final_path, info
 
-        except yt_dlp.utils.DownloadError as e:
-            raise MyException(
-                f"Unsupported or invalid URL: " f"{video_url} ({e})",
-                sys,
-            ) from e
+# --------------------------------------------------------------------------
+# Job helpers
+# --------------------------------------------------------------------------
+
+def count_open_jobs_locked() -> int:
+    """
+    Caller must hold JOBS_LOCK.
+    """
+
+    return sum(
+        1
+        for job in JOBS.values()
+        if job["status"]
+        in {
+            "queued",
+            "running",
+        }
+    )
+
+
+def has_open_job_for_client_locked(
+    client_id: str,
+) -> bool:
+    """
+    Caller must hold JOBS_LOCK.
+    """
+
+    return any(
+        job.get("client_id")
+        == client_id
+        and job["status"]
+        in {
+            "queued",
+            "running",
+        }
+        for job in JOBS.values()
+    )
+
+
+def new_job(
+    source_type: str,
+    source_label: str,
+    client_id: str,
+) -> str:
+    """
+    Create a fresh job entry.
+    """
+
+    job_id = uuid.uuid4().hex[:12]
+
+    with JOBS_LOCK:
+
+        JOBS[job_id] = {
+            "id": job_id,
+
+            "client_id": client_id,
+
+            "source_type": source_type,
+
+            "source_label": source_label,
+
+            "status": "queued",
+
+            "current_stage": None,
+
+            "stages": {
+                stage["key"]: "pending"
+                for stage in STAGE_DEFS
+            },
+
+            "error": None,
+
+            "warning": None,
+
+            "video_id": None,
+
+            "media_url": None,
+
+            "artifact_root": None,
+
+            "results": None,
+
+            "qa_pipeline": None,
+        }
+
+    return job_id
+
+
+def set_stage(
+    job_id: str,
+    key: str,
+    status: str,
+) -> None:
+    """
+    Update one stage's status.
+    """
+
+    with JOBS_LOCK:
+
+        job = JOBS[job_id]
+
+        job["stages"][key] = status
+
+        if status == "running":
+
+            job["current_stage"] = key
+
+            job["status"] = "running"
+
+
+def public_job_view(
+    job: dict,
+) -> dict:
+    """
+    Strip internal state before sending to frontend.
+    """
+
+    view = {
+        key: value
+        for key, value in job.items()
+        if key
+        not in {
+            "qa_pipeline",
+            "client_id",
+            "artifact_root",
+        }
+    }
+
+    if job.get(
+        "results"
+    ):
+
+        view["results"] = {
+            **job["results"],
+
+            "qa_ready": (
+                job.get(
+                    "qa_pipeline"
+                )
+                is not None
+            ),
+        }
+
+    return view
+
+
+# --------------------------------------------------------------------------
+# Pipeline artifact isolation
+# --------------------------------------------------------------------------
+
+def isolate_pipeline_artifacts(
+    pipeline,
+    job_id: str,
+) -> str:
+    """
+    Move every config path currently pointing inside
+    ./artifact/... into:
+
+        ./artifact/jobs/<job_id>/...
+
+    This is important because your logs showed shared
+    paths such as:
+
+        artifact/audio_ingestion/audio/input_audio.webm
+
+    Two concurrent users cannot safely share those paths.
+    """
+
+    job_root = os.path.abspath(
+        os.path.join(
+            JOB_ARTIFACT_DIR,
+            job_id,
+        )
+    )
+
+    os.makedirs(
+        job_root,
+        exist_ok=True,
+    )
+
+    artifact_base = os.path.abspath(
+        "artifact"
+    )
+
+    for attr_name, config in vars(
+        pipeline
+    ).items():
+
+        if not (
+            attr_name.endswith(
+                "_config"
+            )
+            or "config" in attr_name.lower()
+        ):
+            continue
+
+        if not hasattr(
+            config,
+            "__dict__",
+        ):
+            continue
+
+        for key, value in vars(
+            config
+        ).items():
+
+            if not isinstance(
+                value,
+                (str, os.PathLike),
+            ):
+                continue
+
+            value_str = os.fspath(
+                value
+            )
+
+            try:
+
+                absolute_value = (
+                    os.path.abspath(
+                        value_str
+                    )
+                )
+
+                if (
+                    os.path.commonpath(
+                        [
+                            artifact_base,
+                            absolute_value,
+                        ]
+                    )
+                    != artifact_base
+                ):
+                    continue
+
+            except Exception:
+                continue
+
+            relative_path = (
+                os.path.relpath(
+                    absolute_value,
+                    artifact_base,
+                )
+            )
+
+            new_path = os.path.join(
+                job_root,
+                relative_path,
+            )
+
+            setattr(
+                config,
+                key,
+                new_path,
+            )
+
+            logger.info(
+                f"Job {job_id}: isolated "
+                f"{attr_name}.{key} -> {new_path}"
+            )
+
+    return job_root
+
+
+# --------------------------------------------------------------------------
+# Upload handling
+# --------------------------------------------------------------------------
+
+def extract_duration_from_ffmpeg_stderr(
+    stderr: str,
+) -> float:
+    """
+    Parse source duration from FFmpeg stderr.
+    """
+
+    import re
+
+    match = re.search(
+        r"Duration:\s*(\d+):(\d+):(\d+\.\d+)",
+        stderr,
+    )
+
+    if not match:
+
+        raise ValueError(
+            "Could not determine media duration"
+        )
+
+    hours, minutes, seconds = (
+        match.groups()
+    )
+
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + float(seconds)
+    )
+
+
+def ingest_uploaded_file(
+    job_id: str,
+    saved_path: str,
+    original_filename: str,
+    pipeline,
+):
+    """
+    Process uploaded media.
+
+    Optimization:
+    - No full uploaded-video -> MP3 conversion.
+    - FFmpeg chunks directly from the source file.
+    - Original source is deleted after chunking.
+    """
+
+    from src.components.audio_ingestion import (
+        AudioIngestion,
+    )
+
+    from src.entity.artifact_entity import (
+        AudioIngestionArtifact,
+    )
+
+    from src.utils.main_utils import (
+        save_json,
+    )
+
+    config = (
+        pipeline.audio_ingestion_config
+    )
+
+    audio_ingestion = (
+        AudioIngestion(
+            audio_ingestion_config=config
+        )
+    )
+
+    duration = (
+        audio_ingestion.get_media_duration(
+            saved_path
+        )
+    )
+
+    audio_chunks_dir = (
+        audio_ingestion.create_audio_chunks(
+            saved_path
+        )
+    )
+
+    audio_ingestion.cleanup_audio_file(
+        saved_path
+    )
+
+    chunk_durations = (
+        audio_ingestion.compute_chunk_durations(
+            duration,
+            config.chunk_duration,
+        )
+    )
+
+    video_metadata = {
+        "id": job_id,
+        "title": original_filename,
+        "description": None,
+        "duration": duration,
+        "upload_date": None,
+        "uploader": "Uploaded file",
+        "channel": None,
+        "view_count": None,
+        "like_count": None,
+        "thumbnail": None,
+        "webpage_url": None,
+    }
+
+    video_metadata_file_path = (
+        save_json(
+            video_metadata,
+            config.video_metadata_file_path,
+        )
+    )
+
+    return AudioIngestionArtifact(
+        audio_file_path=saved_path,
+        audio_chunks_dir=audio_chunks_dir,
+        video_metadata_file_path=(
+            video_metadata_file_path
+        ),
+        chunk_durations=chunk_durations,
+    )
+
+
+# --------------------------------------------------------------------------
+# Background pipeline runner
+# --------------------------------------------------------------------------
+
+def run_job(
+    job_id: str,
+    source_type: str,
+    source_value: str,
+    original_filename: Optional[str] = None,
+) -> None:
+    """
+    Run one complete VideoMind pipeline.
+
+    Maximum two jobs execute concurrently.
+    """
+
+    pipeline = None
+
+    PIPELINE_SEMAPHORE.acquire()
+
+    try:
+
+        logger.info(
+            f"Pipeline slot acquired for job {job_id}"
+        )
+
+        from src.pipeline.video_pipeline import (
+            VideoPipeline,
+        )
+
+        from src.pipeline.qa_pipeline import (
+            QAPipeline,
+        )
+
+        from src.utils.main_utils import (
+            load_json,
+            format_timestamp,
+        )
+
+        # --------------------------------------------------------------
+        # PIPELINE
+        # --------------------------------------------------------------
+
+        pipeline = VideoPipeline()
+
+        # Give every job its own artifact tree.
+        artifact_root = (
+            isolate_pipeline_artifacts(
+                pipeline,
+                job_id,
+            )
+        )
+
+        with JOBS_LOCK:
+
+            if job_id in JOBS:
+
+                JOBS[job_id][
+                    "artifact_root"
+                ] = artifact_root
+
+        logger.info(
+            f"Job {job_id} artifact root: "
+            f"{artifact_root}"
+        )
+
+        # --------------------------------------------------------------
+        # INGESTION
+        # --------------------------------------------------------------
+
+        set_stage(
+            job_id,
+            "ingestion",
+            "running",
+        )
+
+        if source_type == "url":
+
+            ingestion_artifact = (
+                pipeline.start_audio_ingestion(
+                    video_url=source_value
+                )
+            )
+
+            video_meta = load_json(
+                ingestion_artifact.video_metadata_file_path
+            )
+
+            with JOBS_LOCK:
+
+                JOBS[job_id][
+                    "video_id"
+                ] = video_meta.get(
+                    "id"
+                )
+
+        else:
+
+            ingestion_artifact = (
+                ingest_uploaded_file(
+                    job_id=job_id,
+                    saved_path=source_value,
+                    original_filename=original_filename,
+                    pipeline=pipeline,
+                )
+            )
+
+            video_meta = load_json(
+                ingestion_artifact.video_metadata_file_path
+            )
+
+            with JOBS_LOCK:
+
+                JOBS[job_id][
+                    "media_url"
+                ] = (
+                    f"/media/{job_id}/"
+                    f"{os.path.basename(source_value)}"
+                )
+
+        set_stage(
+            job_id,
+            "ingestion",
+            "done",
+        )
+
+        # --------------------------------------------------------------
+        # TRANSCRIPTION
+        # --------------------------------------------------------------
+
+        set_stage(
+            job_id,
+            "transcription",
+            "running",
+        )
+
+        transcription_artifact = (
+            pipeline.start_audio_transcription(
+                ingestion_artifact
+            )
+        )
+
+        set_stage(
+            job_id,
+            "transcription",
+            "done",
+        )
+
+        # --------------------------------------------------------------
+        # TEXT PROCESSING
+        # --------------------------------------------------------------
+
+        set_stage(
+            job_id,
+            "text_processing",
+            "running",
+        )
+
+        text_processing_artifact = (
+            pipeline.start_text_processing(
+                transcription_artifact
+            )
+        )
+
+        set_stage(
+            job_id,
+            "text_processing",
+            "done",
+        )
+
+        # --------------------------------------------------------------
+        # TIMESTAMP + SUMMARY
+        # --------------------------------------------------------------
+
+        set_stage(
+            job_id,
+            "timestamp",
+            "running",
+        )
+
+        set_stage(
+            job_id,
+            "summary",
+            "running",
+        )
+
+        timestamp_artifact = None
+        summary_artifact = None
+
+        stage_errors = {}
+
+        try:
+
+            timestamp_artifact = (
+                pipeline.start_timestamp_generation(
+                    transcription_artifact
+                )
+            )
+
+            set_stage(
+                job_id,
+                "timestamp",
+                "done",
+            )
 
         except Exception as e:
-            raise MyException(
-                e,
-                sys,
-            ) from e
 
-    def create_audio_chunks(
-        self,
-        audio_path: str,
-    ) -> str:
-        """
-        Split the downloaded audio file into fixed-length chunks.
+            stage_errors[
+                "timestamp"
+            ] = str(e)
 
-        Args:
-            audio_path: Path to full downloaded audio.
+            set_stage(
+                job_id,
+                "timestamp",
+                "error",
+            )
 
-        Returns:
-            Path to generated chunk directory.
-
-        Raises:
-            MyException: If FFmpeg chunking fails.
-        """
         try:
-            logger.info("Starting audio chunking")
 
-            chunk_duration = self.audio_ingestion_config.chunk_duration
-
-            chunks_dir = self.audio_ingestion_config.audio_chunks_dir
-
-            os.makedirs(
-                chunks_dir,
-                exist_ok=True,
+            summary_artifact = (
+                pipeline.start_summary_generation(
+                    transcription_artifact
+                )
             )
 
-            chunk_pattern = os.path.join(
-                chunks_dir,
-                "chunk_%03d.mp3",
+            set_stage(
+                job_id,
+                "summary",
+                "done",
             )
 
-            command = [
-                "ffmpeg",
-                "-y",
-                "-i",
-                audio_path,
-                "-f",
-                "segment",
-                "-segment_time",
-                str(chunk_duration),
-                "-reset_timestamps",
-                "1",
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "2",
-                chunk_pattern,
+        except Exception as e:
+
+            stage_errors[
+                "summary"
+            ] = str(e)
+
+            set_stage(
+                job_id,
+                "summary",
+                "error",
+            )
+
+        if stage_errors:
+
+            logger.warning(
+                "Non-critical stage failures: "
+                + ", ".join(
+                    stage_errors.keys()
+                )
+            )
+
+        # --------------------------------------------------------------
+        # EMBEDDING
+        # --------------------------------------------------------------
+
+        set_stage(
+            job_id,
+            "embedding",
+            "running",
+        )
+
+        embedding_artifact = (
+            pipeline.start_embedding_indexing(
+                text_processing_artifact
+            )
+        )
+
+        set_stage(
+            job_id,
+            "embedding",
+            "done",
+        )
+
+        # --------------------------------------------------------------
+        # WARNING
+        # --------------------------------------------------------------
+
+        if stage_errors:
+
+            with JOBS_LOCK:
+
+                JOBS[job_id][
+                    "warning"
+                ] = (
+                    "Some stages failed, but the "
+                    "pipeline completed. Q&A is still available."
+                )
+
+        # --------------------------------------------------------------
+        # QA PIPELINE
+        # --------------------------------------------------------------
+
+        qa_pipeline = (
+            QAPipeline(
+                embedding_artifact=(
+                    embedding_artifact
+                )
+            )
+        )
+
+        # --------------------------------------------------------------
+        # RESULTS
+        # --------------------------------------------------------------
+
+        timestamps = []
+
+        if timestamp_artifact is not None:
+
+            timestamps = load_json(
+                timestamp_artifact.timestamp_file_path
+            )[
+                "topics"
             ]
 
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
+        summary = {}
+
+        if summary_artifact is not None:
+
+            summary = load_json(
+                summary_artifact.summary_file_path
             )
 
-            if result.returncode != 0:
-                logger.error("ffmpeg chunking failed: " f"{result.stderr}")
+        segments = load_json(
+            transcription_artifact.transcript_file_path
+        )[
+            "segments"
+        ]
 
-                raise RuntimeError(f"ffmpeg failed with code " f"{result.returncode}")
+        transcript = [
+            {
+                "start_time": format_timestamp(
+                    seg["start"]
+                ),
+                "end_time": format_timestamp(
+                    seg["end"]
+                ),
+                "text": seg["text"],
+            }
+            for seg in segments
+        ]
 
-            logger.info("Audio chunking completed")
+        # --------------------------------------------------------------
+        # COMPLETE
+        # --------------------------------------------------------------
 
-            return chunks_dir
+        with JOBS_LOCK:
 
-        except Exception as e:
-            raise MyException(
-                e,
-                sys,
-            ) from e
+            job = JOBS[job_id]
 
-    def cleanup_audio_file(
-        self,
-        audio_path: str,
-    ) -> None:
-        """
-        Delete the original full audio file after chunking.
+            job[
+                "qa_pipeline"
+            ] = qa_pipeline
 
-        Failure to delete the file is logged as a warning and does not
-        fail the pipeline.
-        """
-        try:
-            if os.path.exists(audio_path):
-                os.remove(audio_path)
+            job[
+                "status"
+            ] = "completed"
 
-                logger.info(f"Deleted original audio file: " f"{audio_path}")
+            job[
+                "current_stage"
+            ] = None
 
-        except Exception as e:
-            logger.warning(
-                f"Could not delete original audio file " f"{audio_path}: {e}"
-            )
-
-    def compute_chunk_durations(
-        self,
-        total_duration: float,
-        chunk_duration: int,
-    ) -> list:
-        """
-        Deterministically compute each chunk duration.
-
-        Args:
-            total_duration: Total source duration in seconds.
-            chunk_duration: Configured chunk length in seconds.
-
-        Returns:
-            List containing duration of each chunk.
-        """
-        try:
-            if total_duration is None:
-                raise ValueError("Video duration is not available")
-
-            if chunk_duration <= 0:
-                raise ValueError("Chunk duration must be greater than zero")
-
-            full_chunks = int(total_duration // chunk_duration)
-
-            remainder = total_duration - (full_chunks * chunk_duration)
-
-            durations = [float(chunk_duration)] * full_chunks
-
-            if remainder > 0:
-                durations.append(float(remainder))
-
-            return durations
-
-        except Exception as e:
-            raise MyException(
-                e,
-                sys,
-            ) from e
-
-    def extract_video_metadata(
-        self,
-        info: dict,
-    ) -> dict:
-        """
-        Extract a clean subset of video metadata.
-        """
-        try:
-            return {
-                "id": info.get("id"),
-                "title": info.get("title"),
-                "description": info.get("description"),
-                "duration": info.get("duration"),
-                "upload_date": info.get("upload_date"),
-                "uploader": info.get("uploader"),
-                "channel": info.get("channel"),
-                "view_count": info.get("view_count"),
-                "like_count": info.get("like_count"),
-                "thumbnail": info.get("thumbnail"),
-                "webpage_url": info.get("webpage_url"),
+            job[
+                "results"
+            ] = {
+                "metadata": video_meta,
+                "summary": summary,
+                "timestamps": timestamps,
+                "transcript": transcript,
             }
 
-        except Exception as e:
-            raise MyException(
-                e,
-                sys,
-            ) from e
+        logger.info(
+            f"Job {job_id} completed successfully"
+        )
 
-    def initiate_audio_ingestion(
-        self,
-        video_url: str,
-    ) -> AudioIngestionArtifact:
-        """
-        Execute the complete audio ingestion process.
+        # --------------------------------------------------------------
+        # RELEASE TEMPORARY REFERENCES
+        # --------------------------------------------------------------
 
-        Lifecycle:
-            1. Download full audio.
-            2. Create audio chunks.
-            3. Delete full audio.
-            4. Save metadata.
-        """
+        pipeline = None
+
+        ingestion_artifact = None
+        transcription_artifact = None
+        text_processing_artifact = None
+        timestamp_artifact = None
+        summary_artifact = None
+        embedding_artifact = None
+
+        gc.collect()
+
+    except Exception as e:
+
+        logger.exception(
+            f"Job {job_id} failed"
+        )
+
+        with JOBS_LOCK:
+
+            if job_id in JOBS:
+
+                job = JOBS[job_id]
+
+                if job["status"] != "failed":
+
+                    job[
+                        "status"
+                    ] = "failed"
+
+                    job[
+                        "error"
+                    ] = str(e)
+
+                current = job.get(
+                    "current_stage"
+                )
+
+                if (
+                    current
+                    and job["stages"].get(
+                        current
+                    )
+                    == "running"
+                ):
+
+                    job[
+                        "stages"
+                    ][current] = "error"
+
+    finally:
+
+        pipeline = None
+
         try:
-            audio_file_path, info = self.download_audio(video_url)
 
-            audio_chunks_dir = self.create_audio_chunks(audio_file_path)
+            PIPELINE_SEMAPHORE.release()
 
-            # Full audio is no longer needed after chunking.
-            self.cleanup_audio_file(audio_file_path)
-
-            chunk_duration = self.audio_ingestion_config.chunk_duration
-
-            chunk_durations = self.compute_chunk_durations(
-                total_duration=info.get("duration"),
-                chunk_duration=chunk_duration,
+            logger.info(
+                f"Pipeline slot released for job {job_id}"
             )
-
-            video_metadata = self.extract_video_metadata(info)
-
-            video_metadata_file_path = save_json(
-                data=video_metadata,
-                file_path=(self.audio_ingestion_config.video_metadata_file_path),
-            )
-
-            audio_ingestion_artifact = AudioIngestionArtifact(
-                audio_file_path=audio_file_path,
-                audio_chunks_dir=audio_chunks_dir,
-                video_metadata_file_path=(video_metadata_file_path),
-                chunk_durations=chunk_durations,
-            )
-
-            logger.info("Audio ingestion artifact created")
-
-            return audio_ingestion_artifact
 
         except Exception as e:
-            raise MyException(
-                e,
-                sys,
-            ) from e
+
+            logger.warning(
+                f"Could not release pipeline slot: {e}"
+            )
+
+        # Global finished-job cleanup.
+        removed_jobs = []
+
+        with JOBS_LOCK:
+
+            removed_jobs = (
+                prune_finished_jobs_locked()
+            )
+
+        for removed_job in removed_jobs:
+
+            cleanup_job_resources(
+                removed_job
+            )
+
+        gc.collect()
+
+
+# --------------------------------------------------------------------------
+# Routes
+# --------------------------------------------------------------------------
+
+@app.get("/")
+def index(
+    request: Request,
+):
+    """
+    Serve frontend and establish client identity.
+    """
+
+    response = FileResponse(
+        os.path.join(
+            STATIC_DIR,
+            "index.html",
+        )
+    )
+
+    client_id = request.cookies.get(
+        CLIENT_COOKIE_NAME
+    )
+
+    if not client_id:
+
+        client_id = uuid.uuid4().hex
+
+        response.set_cookie(
+            key=CLIENT_COOKIE_NAME,
+            value=client_id,
+            httponly=True,
+            samesite="lax",
+            secure=(
+                request.url.scheme
+                == "https"
+            ),
+        )
+
+    return response
+
+
+@app.get("/api/config")
+def get_config():
+    """
+    Return stage definitions.
+    """
+
+    return {
+        "stages": STAGE_DEFS
+    }
+
+
+# --------------------------------------------------------------------------
+# URL validation
+# --------------------------------------------------------------------------
+
+class ValidateRequest(
+    BaseModel
+):
+    url: str
+
+
+@app.post("/api/validate")
+def validate_url(
+    payload: ValidateRequest,
+):
+    """
+    Pre-flight YouTube extraction.
+
+    The extracted info is cached so the real
+    download can reuse it.
+    """
+
+    try:
+
+        import yt_dlp
+
+        opts = {
+            "quiet": False,
+            "no_warnings": False,
+            "verbose": True,
+            "noplaylist": True,
+            "skip_download": True,
+
+            "cookiefile": os.getenv(
+                "YOUTUBE_COOKIE_FILE",
+                "/tmp/cookies.txt",
+            ),
+
+            "js_runtimes": {
+                "node": {}
+            },
+
+            "extractor_args": {
+                "youtube": {
+                    "player_client": [
+                        "mweb",
+                        "web_safari",
+                    ]
+                },
+
+                "youtubepot-bgutilhttp": {
+                    "base_url": [
+                        "http://127.0.0.1:4416"
+                    ]
+                },
+            },
+        }
+
+        with yt_dlp.YoutubeDL(
+            opts
+        ) as ydl:
+
+            info = ydl.extract_info(
+                payload.url,
+                download=False,
+            )
+
+        if info is None:
+
+            raise ValueError(
+                "Could not read this link"
+            )
+
+        # Cache only after successful extraction.
+        from src.components.audio_ingestion import (
+            cache_prefetched_info,
+        )
+
+        cache_prefetched_info(
+            payload.url,
+            info,
+        )
+
+        return {
+            "valid": True,
+            "title": info.get(
+                "title"
+            ),
+            "duration": info.get(
+                "duration"
+            ),
+            "thumbnail": info.get(
+                "thumbnail"
+            ),
+            "channel": (
+                info.get(
+                    "channel"
+                )
+                or info.get(
+                    "uploader"
+                )
+            ),
+            "video_id": info.get(
+                "id"
+            ),
+        }
+
+    except Exception as e:
+
+        logger.exception(
+            "URL validation failed"
+        )
+
+        return JSONResponse(
+            status_code=400,
+            content={
+                "valid": False,
+                "error": str(e),
+            },
+        )
+
+
+# --------------------------------------------------------------------------
+# Create job
+# --------------------------------------------------------------------------
+
+@app.post("/api/jobs")
+def create_job(
+    request: Request,
+    url: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+):
+    """
+    Start processing a video.
+
+    Maximum:
+        2 open jobs globally.
+        1 open job per browser/client.
+    """
+
+    if not url and not file:
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Provide a video URL or upload "
+                "a video file"
+            ),
+        )
+
+    client_id, is_new_client = (
+        get_or_create_client_id(
+            request
+        )
+    )
+
+    with JOBS_LOCK:
+
+        if has_open_job_for_client_locked(
+            client_id
+        ):
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Your previous video is still "
+                    "processing — wait for it to finish."
+                ),
+            )
+
+        if (
+            count_open_jobs_locked()
+            >= MAX_OPEN_JOBS
+        ):
+
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Two videos are already "
+                    "processing. Please try again "
+                    "after one finishes."
+                ),
+            )
+
+    try:
+
+        # --------------------------------------------------------------
+        # Clean this user's old finished state
+        # AFTER the new request is accepted.
+        # --------------------------------------------------------------
+
+        cleanup_previous_finished_jobs_for_client(
+            client_id
+        )
+
+        # --------------------------------------------------------------
+        # URL
+        # --------------------------------------------------------------
+
+        if url:
+
+            job_id = new_job(
+                "url",
+                url,
+                client_id,
+            )
+
+            threading.Thread(
+                target=run_job,
+                args=(
+                    job_id,
+                    "url",
+                    url,
+                ),
+                daemon=True,
+            ).start()
+
+            response = JSONResponse(
+                {
+                    "job_id": job_id
+                }
+            )
+
+            if is_new_client:
+
+                response.set_cookie(
+                    key=CLIENT_COOKIE_NAME,
+                    value=client_id,
+                    httponly=True,
+                    samesite="lax",
+                    secure=(
+                        request.url.scheme
+                        == "https"
+                    ),
+                )
+
+            return response
+
+        # --------------------------------------------------------------
+        # UPLOAD
+        # --------------------------------------------------------------
+
+        filename = os.path.basename(
+            file.filename or "uploaded_video"
+        )
+
+        job_id = new_job(
+            "upload",
+            filename,
+            client_id,
+        )
+
+        job_dir = os.path.join(
+            UPLOAD_DIR,
+            job_id,
+        )
+
+        os.makedirs(
+            job_dir,
+            exist_ok=True,
+        )
+
+        saved_path = os.path.join(
+            job_dir,
+            filename,
+        )
+
+        with open(
+            saved_path,
+            "wb",
+        ) as out:
+
+            shutil.copyfileobj(
+                file.file,
+                out,
+            )
+
+        threading.Thread(
+            target=run_job,
+            args=(
+                job_id,
+                "upload",
+                saved_path,
+                filename,
+            ),
+            daemon=True,
+        ).start()
+
+        response = JSONResponse(
+            {
+                "job_id": job_id
+            }
+        )
+
+        if is_new_client:
+
+            response.set_cookie(
+                key=CLIENT_COOKIE_NAME,
+                value=client_id,
+                httponly=True,
+                samesite="lax",
+                secure=(
+                    request.url.scheme
+                    == "https"
+                ),
+            )
+
+        return response
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+
+        logger.exception(
+            "Could not start processing"
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Couldn't start processing: "
+                f"{e}"
+            ),
+        )
+
+    finally:
+
+        if file is not None:
+
+            try:
+                file.file.close()
+            except Exception:
+                pass
+
+
+# --------------------------------------------------------------------------
+# Job status
+# --------------------------------------------------------------------------
+
+@app.get("/api/jobs/{job_id}")
+def get_job(
+    job_id: str,
+):
+    """
+    Poll job status and return results once completed.
+    """
+
+    with JOBS_LOCK:
+
+        job = JOBS.get(
+            job_id
+        )
+
+        if job is None:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Job not found",
+            )
+
+        return public_job_view(
+            job
+        )
+
+
+# --------------------------------------------------------------------------
+# Q&A
+# --------------------------------------------------------------------------
+
+class AskRequest(
+    BaseModel
+):
+    question: str
+
+
+@app.post(
+    "/api/jobs/{job_id}/ask"
+)
+def ask_question(
+    job_id: str,
+    payload: AskRequest,
+):
+    """
+    Answer a question about a completed video.
+    """
+
+    with JOBS_LOCK:
+
+        job = JOBS.get(
+            job_id
+        )
+
+        if job is None:
+
+            raise HTTPException(
+                status_code=404,
+                detail="Job not found",
+            )
+
+        qa_pipeline = job.get(
+            "qa_pipeline"
+        )
+
+    if qa_pipeline is None:
+
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "This video isn't ready "
+                "for questions yet"
+            ),
+        )
+
+    try:
+
+        return qa_pipeline.ask(
+            payload.question
+        )
+
+    except Exception as e:
+
+        from src.exception import (
+            MyException,
+        )
+
+        if isinstance(
+            e,
+            MyException,
+        ):
+
+            raise HTTPException(
+                status_code=500,
+                detail=str(e),
+            )
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+
+# --------------------------------------------------------------------------
+# Uploaded media
+# --------------------------------------------------------------------------
+
+@app.get(
+    "/media/{job_id}/{filename}"
+)
+def get_media(
+    job_id: str,
+    filename: str,
+):
+    """
+    Serve uploaded media.
+    """
+
+    safe_filename = os.path.basename(
+        filename
+    )
+
+    file_path = os.path.join(
+        UPLOAD_DIR,
+        job_id,
+        safe_filename,
+    )
+
+    if not os.path.exists(
+        file_path
+    ):
+
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    return FileResponse(
+        file_path
+    )

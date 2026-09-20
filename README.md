@@ -61,24 +61,6 @@ Instead of watching an entire video, you can jump directly to the parts that mat
 
 ---
 
-## 🎬 See It In Action
-
-> **Paste a YouTube URL → Process → Explore chapters → Ask questions**
-
-<!-- Replace with your actual demo GIF -->
-
-<p align="center">
-  <img src="docs/demo.gif" alt="VideoMind demo" width="850">
-</p>
-
-<p align="center">
-  <a href="YOUR_LIVE_DEMO_URL">
-    <strong>▶ Try the live application</strong>
-  </a>
-</p>
-
----
-
 ## 🏗️ Architecture
 
 ```mermaid

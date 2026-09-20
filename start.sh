@@ -1,3 +1,7 @@
+#!/bin/bash
+
+set -e
+
 echo "Preparing YouTube cookies..."
 
 cp /etc/secrets/cookies.txt /tmp/cookies.txt

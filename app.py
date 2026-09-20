@@ -528,8 +528,10 @@ def get_config():
 # URL validation
 # --------------------------------------------------------------------------
 
+
 class ValidateRequest(BaseModel):
     url: str
+
 
 @app.post("/api/validate")
 def validate_url(payload: ValidateRequest):

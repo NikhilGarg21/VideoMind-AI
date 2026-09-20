@@ -548,6 +548,7 @@ def validate_url(payload: ValidateRequest):
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            "format": "ba/b",
             "cookiefile": os.getenv(
                 "YOUTUBE_COOKIE_FILE",
                 "cookies.txt",

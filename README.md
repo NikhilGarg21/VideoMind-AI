@@ -9,16 +9,10 @@
   <img src="https://img.shields.io/badge/DEPLOYED-RENDER-46E3B7?style=for-the-badge&logo=render&logoColor=white" alt="Render">
   <img src="https://img.shields.io/badge/PYTHON-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11">
   <img src="https://img.shields.io/badge/FASTAPI-005571?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI">
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/LLM-GROQ-F55036?style=for-the-badge&logo=groq&logoColor=white" alt="Groq">
   <img src="https://img.shields.io/badge/EMBEDDINGS-HUGGING%20FACE-FFD21E?style=for-the-badge&logo=huggingface&logoColor=black" alt="Hugging Face">
   <img src="https://img.shields.io/badge/VECTOR%20SEARCH-FAISS-0467DF?style=for-the-badge&logo=meta&logoColor=white" alt="FAISS">
   <img src="https://img.shields.io/badge/VIDEO-YT--DLP-FF0000?style=for-the-badge&logo=youtube&logoColor=white" alt="yt-dlp">
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/badge/AUDIO-FFMPEG-007808?style=for-the-badge&logo=ffmpeg&logoColor=white" alt="FFmpeg">
   <img src="https://img.shields.io/badge/API-REST-8B5CF6?style=for-the-badge&logo=fastapi&logoColor=white" alt="REST API">
   <img src="https://img.shields.io/badge/CONCURRENCY-2%20USERS-9333EA?style=for-the-badge" alt="2 concurrent users">

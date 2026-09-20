@@ -511,90 +511,6 @@ def public_job_view(
 
 
 # --------------------------------------------------------------------------
-# Pipeline artifact isolation
-# --------------------------------------------------------------------------
-
-
-def isolate_pipeline_artifacts(
-    pipeline,
-    job_id: str,
-) -> str:
-    """
-    Move config paths currently pointing inside ./artifact/...
-    into ./artifact/jobs/<job_id>/...
-    """
-    job_root = os.path.abspath(
-        os.path.join(
-            JOB_ARTIFACT_DIR,
-            job_id,
-        )
-    )
-
-    os.makedirs(
-        job_root,
-        exist_ok=True,
-    )
-
-    artifact_base = os.path.abspath(ARTIFACT_DIR)
-
-    for attr_name, config in vars(pipeline).items():
-        if not (attr_name.endswith("_config") or "config" in attr_name.lower()):
-            continue
-
-        if not hasattr(
-            config,
-            "__dict__",
-        ):
-            continue
-
-        for key, value in vars(config).items():
-            if not isinstance(
-                value,
-                (str, os.PathLike),
-            ):
-                continue
-
-            value_str = os.fspath(value)
-
-            try:
-                absolute_value = os.path.abspath(value_str)
-
-                if (
-                    os.path.commonpath(
-                        [
-                            artifact_base,
-                            absolute_value,
-                        ]
-                    )
-                    != artifact_base
-                ):
-                    continue
-
-            except Exception:
-                continue
-
-            relative_path = os.path.relpath(
-                absolute_value,
-                artifact_base,
-            )
-
-            new_path = os.path.join(
-                job_root,
-                relative_path,
-            )
-
-            setattr(
-                config,
-                key,
-                new_path,
-            )
-
-            logger.info(f"Job {job_id}: isolated " f"{attr_name}.{key} -> {new_path}")
-
-    return job_root
-
-
-# --------------------------------------------------------------------------
 # Upload handling
 # --------------------------------------------------------------------------
 
@@ -722,12 +638,14 @@ def run_job(
         # PIPELINE
         # --------------------------------------------------------------
 
-        pipeline = VideoPipeline()
-
-        artifact_root = isolate_pipeline_artifacts(
-            pipeline,
-            job_id,
+        artifact_root = os.path.abspath(
+            os.path.join(
+                JOB_ARTIFACT_DIR,
+                job_id,
+            )
         )
+
+        pipeline = VideoPipeline(artifact_dir=artifact_root)
 
         with JOBS_LOCK:
             if job_id in JOBS:

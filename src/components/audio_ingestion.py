@@ -55,7 +55,10 @@ class AudioIngestion:
                 "noplaylist": True,
                 "quiet": False,
                 "no_warnings": False,
-                "cookiefile": os.getenv("YOUTUBE_COOKIE_FILE", "cookies.txt"),
+                "cookiefile": os.getenv(
+                    "YOUTUBE_COOKIE_FILE",
+                    "cookies.txt",
+                ),
                 "extractor_args": {
                     "youtube": {"player_client": ["default", "web_embedded"]}
                 },

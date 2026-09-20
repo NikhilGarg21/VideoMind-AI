@@ -1,4 +1,7 @@
-#!/bin/bash
+echo "Preparing YouTube cookies..."
+
+cp /etc/secrets/cookies.txt /tmp/cookies.txt
+chmod 600 /tmp/cookies.txt
 
 echo "Starting bgutil POT provider..."
 

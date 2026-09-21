@@ -6,14 +6,14 @@ const state = {
   jobId: null,
   sourceType: null, // "url" | "upload"
   selectedFile: null,
-  validated: null, // result of /api/validate, or null
+  validated: null,
   pollTimer: null,
   lastStartedUrl: null,
-  lastValidatedUrl: null, // Prevent duplicate validation requests
+  lastValidatedUrl: null,
   stageDefs: [],
   ytPlayer: null,
   ytReady: false,
-  mediaEl: null, // <video> or <audio> element when playing an uploaded file
+  mediaEl: null,
   results: null,
 };
 
@@ -59,10 +59,6 @@ const el = {
   errorBanner: document.getElementById("errorBanner"),
   errorBannerText: document.getElementById("errorBannerText"),
 };
-
-// ----------------------------------------------------------------------------
-// Init
-// ----------------------------------------------------------------------------
 
 async function init() {
   buildWaveform();
@@ -113,10 +109,6 @@ function buildChainModules() {
     .join("");
 }
 
-// ----------------------------------------------------------------------------
-// Events
-// ----------------------------------------------------------------------------
-
 function bindEvents() {
   el.checkBtn.addEventListener("click", handleCheck);
 
@@ -146,6 +138,7 @@ function bindEvents() {
 
   el.dropzone.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
       el.fileInput.click();
     }
   });
@@ -199,47 +192,45 @@ function bindEvents() {
   });
 }
 
-// ----------------------------------------------------------------------------
-// Memory Cleanup Helper
-// ----------------------------------------------------------------------------
-
 function clearPreviousResults() {
   if (state.ytPlayer && typeof state.ytPlayer.destroy === "function") {
-    state.ytPlayer.destroy();
-    state.ytPlayer = null;
+    try {
+      state.ytPlayer.destroy();
+    } catch (err) {
+      // Ignore stale YouTube player cleanup errors.
+    }
   }
 
+  state.ytPlayer = null;
   state.ytReady = false;
 
   if (state.mediaEl) {
-    state.mediaEl.pause();
-    state.mediaEl.removeAttribute("src");
-    state.mediaEl.load();
+    try {
+      state.mediaEl.pause();
+      state.mediaEl.removeAttribute("src");
+      state.mediaEl.load();
+    } catch (err) {
+      // Ignore stale media cleanup errors.
+    }
+
     state.mediaEl = null;
   }
 
   el.videoEmbed.innerHTML = "";
+  el.videoEmbed.classList.remove("audio-mode");
+
   el.chaptersList.innerHTML = "";
   el.transcriptList.innerHTML = "";
 
   state.results = null;
-
-  // Retain UI components hidden state until refreshed
   el.resultsSection.hidden = true;
 }
-
-// ----------------------------------------------------------------------------
-// Validate (URL) / select (file)
-// ----------------------------------------------------------------------------
 
 async function handleCheck() {
   const url = el.urlInput.value.trim();
 
-  if (!url) {
-    return;
-  }
+  if (!url) return;
 
-  // Prevent hitting the backend again if URL hasn't changed & is already validated
   if (url === state.lastValidatedUrl && state.validated) {
     if (url !== state.lastStartedUrl) {
       startJob();
@@ -372,10 +363,6 @@ function clearError() {
   el.formError.hidden = true;
 }
 
-// ----------------------------------------------------------------------------
-// Start job
-// ----------------------------------------------------------------------------
-
 async function startJob() {
   el.errorBanner.hidden = true;
   el.analyzeBtn.disabled = true;
@@ -407,7 +394,6 @@ async function startJob() {
       throw new Error(err.detail || "Couldn't start processing");
     }
 
-    // Purge old DOM render elements on starting new job execution
     clearPreviousResults();
 
     const { job_id } = await res.json();
@@ -431,7 +417,6 @@ async function startJob() {
       .forEach((b) => b.remove());
 
     el.chatEmpty.hidden = false;
-
     el.signalChain.hidden = false;
 
     setStatusChip("processing", "Processing");
@@ -442,6 +427,7 @@ async function startJob() {
     pollJob();
   } catch (err) {
     showFormError(err.message);
+
     el.analyzeBtn.disabled = false;
     el.analyzeBtn.textContent = "Analyze";
   }
@@ -459,13 +445,17 @@ function pollJob() {
 
       if (job.status === "completed") {
         clearInterval(state.pollTimer);
+
         setStatusChip("completed", "Ready");
         setFormBusy(false);
+
         showResults(job);
       } else if (job.status === "failed") {
         clearInterval(state.pollTimer);
+
         setStatusChip("failed", "Failed");
         setFormBusy(false);
+
         showError(job.error || "Processing failed.");
       }
     } catch (err) {
@@ -520,10 +510,6 @@ function setStatusChip(state_, text) {
   el.statusChipText.textContent = text;
 }
 
-// ----------------------------------------------------------------------------
-// Results
-// ----------------------------------------------------------------------------
-
 function showResults(job) {
   state.results = job.results;
   el.resultsSection.hidden = false;
@@ -532,11 +518,15 @@ function showResults(job) {
 
   el.resultTitle.textContent = meta.title || "Untitled";
 
-  el.resultChannel.textContent = [meta.channel, formatDuration(meta.duration)]
+  el.resultChannel.textContent = [
+    meta.channel,
+    formatDuration(meta.duration),
+  ]
     .filter(Boolean)
     .join(" · ");
 
   setupPlayer(job);
+
   renderOverview(job.results.summary);
   renderChapters(job.results.timestamps);
   renderTranscript(job.results.transcript);
@@ -545,8 +535,35 @@ function showResults(job) {
 }
 
 function setupPlayer(job) {
+  if (state.ytPlayer && typeof state.ytPlayer.destroy === "function") {
+    try {
+      state.ytPlayer.destroy();
+    } catch (err) {
+      // Ignore stale player cleanup errors.
+    }
+  }
+
+  state.ytPlayer = null;
   state.ytReady = false;
-  state.mediaEl = null;
+
+  if (state.mediaEl) {
+    try {
+      state.mediaEl.pause();
+      state.mediaEl.removeAttribute("src");
+      state.mediaEl.load();
+    } catch (err) {
+      // Ignore stale media cleanup errors.
+    }
+
+    state.mediaEl = null;
+  }
+
+  el.videoEmbed.innerHTML = "";
+  el.videoEmbed.classList.remove("audio-mode");
+
+  // ------------------------------------------------------------------------
+  // YouTube
+  // ------------------------------------------------------------------------
 
   if (job.video_id) {
     el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
@@ -568,14 +585,20 @@ function setupPlayer(job) {
     return;
   }
 
+  // ------------------------------------------------------------------------
+  // Uploaded media
+  // ------------------------------------------------------------------------
+
   if (job.media_url) {
     if (job.is_video === false) {
+      el.videoEmbed.classList.add("audio-mode");
+
       el.videoEmbed.innerHTML = `
         <div class="audio-only-player">
           <div class="audio-only-icon">♪</div>
           <audio
             id="localPlayer"
-            src="${job.media_url}"
+            src="${escapeHtml(job.media_url)}"
             controls
             preload="metadata"
           ></audio>
@@ -585,7 +608,7 @@ function setupPlayer(job) {
       el.videoEmbed.innerHTML = `
         <video
           id="localPlayer"
-          src="${job.media_url}"
+          src="${escapeHtml(job.media_url)}"
           controls
           preload="metadata"
         ></video>
@@ -597,9 +620,20 @@ function setupPlayer(job) {
     return;
   }
 
+  // ------------------------------------------------------------------------
+  // No preview
+  // ------------------------------------------------------------------------
+
   el.videoEmbed.innerHTML = `
     <div
-      style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-tertiary);font-size:13px;"
+      style="
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        height:100%;
+        color:var(--text-tertiary);
+        font-size:13px;
+      "
     >
       No preview available
     </div>
@@ -612,46 +646,103 @@ function loadYouTubeAPI(callback) {
     return;
   }
 
-  const previousCallback = window.onYouTubeIframeAPIReady;
-
   const tag = document.createElement("script");
 
   tag.src = "https://www.youtube.com/iframe_api";
 
   document.head.appendChild(tag);
 
-  window.onYouTubeIframeAPIReady = () => {
-    if (typeof previousCallback === "function") {
-      previousCallback();
-    }
-
-    callback();
-  };
+  window.onYouTubeIframeAPIReady = callback;
 }
 
 function seekTo(timeLabel) {
   const seconds = parseTimecode(timeLabel);
 
-  if (state.ytReady && state.ytPlayer) {
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return;
+  }
+
+  // ------------------------------------------------------------------------
+  // IMPORTANT:
+  // Always prioritize the currently displayed local media.
+  //
+  // This prevents an old YouTube player state from intercepting clicks when
+  // the current job is an uploaded audio/video file.
+  // ------------------------------------------------------------------------
+
+  if (state.mediaEl) {
+    const media = state.mediaEl;
+
+    const seek = () => {
+      let target = seconds;
+
+      if (Number.isFinite(media.duration) && media.duration > 0) {
+        target = Math.min(seconds, media.duration);
+      }
+
+      try {
+        media.currentTime = target;
+      } catch (err) {
+        return;
+      }
+
+      const playPromise = media.play();
+
+      if (playPromise && typeof playPromise.catch === "function") {
+        playPromise.catch(() => {});
+      }
+    };
+
+    if (media.readyState >= 1) {
+      seek();
+    } else {
+      media.addEventListener("loadedmetadata", seek, {
+        once: true,
+      });
+
+      media.load();
+    }
+
+    return;
+  }
+
+  // ------------------------------------------------------------------------
+  // YouTube
+  // ------------------------------------------------------------------------
+
+  if (
+    state.ytReady &&
+    state.ytPlayer &&
+    typeof state.ytPlayer.seekTo === "function"
+  ) {
     state.ytPlayer.seekTo(seconds, true);
-    state.ytPlayer.playVideo();
-  } else if (state.mediaEl) {
-    state.mediaEl.currentTime = seconds;
 
-    const playPromise = state.mediaEl.play();
-
-    if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch(() => {});
+    if (typeof state.ytPlayer.playVideo === "function") {
+      state.ytPlayer.playVideo();
     }
   }
 }
 
 function parseTimecode(label) {
-  const parts = label.split(":").map(Number);
+  if (typeof label !== "string") {
+    return NaN;
+  }
 
-  return parts.length === 2
-    ? parts[0] * 60 + parts[1]
-    : parts[0] * 3600 + parts[1] * 60 + parts[2];
+  const parts = label.trim().split(":").map(Number);
+
+  if (parts.some((part) => !Number.isFinite(part))) {
+    return NaN;
+  }
+
+  if (parts.length === 2) {
+    return parts[0] * 60 + parts[1];
+  }
+
+  if (parts.length === 3) {
+    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  }
+
+  return NaN;
 }
 
 function renderOverview(summary) {
@@ -683,8 +774,8 @@ function renderChapters(topics) {
   el.chaptersList.innerHTML = topics
     .map(
       (t) => `
-      <li data-time="${t.start_time}">
-        <span class="time-badge">${t.start_time}</span>
+      <li data-time="${escapeHtml(t.start_time)}">
+        <span class="time-badge">${escapeHtml(t.start_time)}</span>
         <span class="chapter-topic">${escapeHtml(t.topic)}</span>
       </li>
     `,
@@ -692,7 +783,10 @@ function renderChapters(topics) {
     .join("");
 
   el.chaptersList.querySelectorAll("li").forEach((li) => {
-    li.addEventListener("click", () => seekTo(li.dataset.time));
+    li.addEventListener("click", (e) => {
+      e.preventDefault();
+      seekTo(li.dataset.time);
+    });
   });
 }
 
@@ -703,10 +797,10 @@ function renderTranscript(segments) {
       <li data-text="${escapeHtml(s.text).toLowerCase()}">
         <span
           class="time-badge"
-          data-time="${s.start_time}"
+          data-time="${escapeHtml(s.start_time)}"
           title="Jump to this moment"
         >
-          ${s.start_time}
+          ${escapeHtml(s.start_time)}
         </span>
         <span class="transcript-text">${escapeHtml(s.text)}</span>
       </li>
@@ -718,7 +812,9 @@ function renderTranscript(segments) {
     .querySelectorAll(".time-badge")
     .forEach((badge) => {
       badge.addEventListener("click", (e) => {
+        e.preventDefault();
         e.stopPropagation();
+
         seekTo(badge.dataset.time);
       });
     });
@@ -729,13 +825,10 @@ function filterTranscript() {
 
   el.transcriptList.querySelectorAll("li").forEach((li) => {
     const matches = !q || li.dataset.text.includes(q);
+
     li.classList.toggle("hidden-match", !matches);
   });
 }
-
-// ----------------------------------------------------------------------------
-// Tabs
-// ----------------------------------------------------------------------------
 
 function switchTab(name) {
   el.tabs
@@ -751,10 +844,6 @@ function switchTab(name) {
     );
 }
 
-// ----------------------------------------------------------------------------
-// Ask
-// ----------------------------------------------------------------------------
-
 async function sendQuestion() {
   const question = el.chatInput.value.trim();
 
@@ -769,27 +858,41 @@ async function sendQuestion() {
   el.chatInput.value = "";
   el.chatSend.disabled = true;
 
-  const pending = appendBubble("assistant pending", "Thinking…");
+  const pending = appendBubble(
+    "assistant pending",
+    "Thinking…",
+  );
 
   try {
-    const res = await fetch(`/api/jobs/${state.jobId}/ask`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
+    const res = await fetch(
+      `/api/jobs/${state.jobId}/ask`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          question,
+        }),
       },
-      body: JSON.stringify({ question }),
-    });
+    );
 
     if (!res.ok) {
       const err = await res.json();
-      throw new Error(err.detail || "Couldn't get an answer.");
+
+      throw new Error(
+        err.detail || "Couldn't get an answer.",
+      );
     }
 
     const data = await res.json();
 
     pending.classList.remove("pending");
 
-    pending.innerHTML = `${escapeHtml(data.answer)}${renderSourceChips(data.sources)}`;
+    pending.innerHTML = `
+      ${escapeHtml(data.answer)}
+      ${renderSourceChips(data.sources)}
+    `;
 
     bindSourceChips(pending);
   } catch (err) {
@@ -821,7 +924,13 @@ function renderSourceChips(sources) {
   const chips = sources
     .map(
       (s) =>
-        `<span class="source-chip" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>`,
+        `<span
+          class="source-chip"
+          data-time="${escapeHtml(s.start_time)}"
+          title="Jump to this moment"
+        >
+          ${escapeHtml(s.start_time)}
+        </span>`,
     )
     .join("");
 
@@ -830,13 +939,11 @@ function renderSourceChips(sources) {
 
 function bindSourceChips(container) {
   container.querySelectorAll(".source-chip").forEach((chip) => {
-    chip.addEventListener("click", () => seekTo(chip.dataset.time));
+    chip.addEventListener("click", () => {
+      seekTo(chip.dataset.time);
+    });
   });
 }
-
-// ----------------------------------------------------------------------------
-// Helpers
-// ----------------------------------------------------------------------------
 
 function formatDuration(seconds) {
   if (!seconds && seconds !== 0) {

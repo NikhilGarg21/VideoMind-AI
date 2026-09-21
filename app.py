@@ -34,7 +34,9 @@ from fastapi import (
 from fastapi.responses import (
     FileResponse,
     JSONResponse,
+    StreamingResponse,
 )
+import mimetypes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -1417,14 +1419,17 @@ def ask_question(
 # Uploaded media
 # --------------------------------------------------------------------------
 
-
 @app.get("/media/{job_id}/{filename}")
 def get_media(
     job_id: str,
     filename: str,
+    request: Request,
 ):
     """
-    Serve uploaded media.
+    Serve uploaded media with HTTP byte-range support.
+
+    Range requests are required for reliable seeking in
+    browser audio/video players.
     """
     safe_filename = os.path.basename(filename)
 
@@ -1440,4 +1445,122 @@ def get_media(
             detail="File not found",
         )
 
-    return FileResponse(file_path)
+    file_size = os.path.getsize(file_path)
+
+    content_type, _ = mimetypes.guess_type(file_path)
+
+    if not content_type:
+        content_type = "application/octet-stream"
+
+    range_header = request.headers.get("range")
+
+    # --------------------------------------------------------------
+    # Normal request
+    # --------------------------------------------------------------
+
+    if not range_header:
+        return FileResponse(
+            file_path,
+            media_type=content_type,
+            headers={
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(file_size),
+            },
+        )
+
+    # --------------------------------------------------------------
+    # Parse byte range
+    # --------------------------------------------------------------
+
+    try:
+        range_value = range_header.strip().lower()
+
+        if not range_value.startswith("bytes="):
+            raise ValueError("Invalid range unit")
+
+        range_value = range_value.replace(
+            "bytes=",
+            "",
+            1,
+        )
+
+        start_str, end_str = range_value.split(
+            "-",
+            1,
+        )
+
+        if start_str:
+            start = int(start_str)
+
+            if end_str:
+                end = int(end_str)
+            else:
+                end = file_size - 1
+
+        else:
+            # Suffix range, e.g. bytes=-500
+            suffix_length = int(end_str)
+
+            if suffix_length <= 0:
+                raise ValueError("Invalid suffix range")
+
+            suffix_length = min(
+                suffix_length,
+                file_size,
+            )
+
+            start = file_size - suffix_length
+            end = file_size - 1
+
+        if start < 0:
+            start = 0
+
+        if end >= file_size:
+            end = file_size - 1
+
+        if start > end or start >= file_size:
+            raise ValueError("Invalid byte range")
+
+    except Exception:
+        return StreamingResponse(
+            content=iter(()),
+            status_code=416,
+            headers={
+                "Content-Range": f"bytes */{file_size}",
+                "Accept-Ranges": "bytes",
+            },
+        )
+
+    content_length = end - start + 1
+
+    def iter_file():
+        with open(file_path, "rb") as media_file:
+            media_file.seek(start)
+
+            remaining = content_length
+
+            while remaining > 0:
+                chunk = media_file.read(
+                    min(
+                        1024 * 1024,
+                        remaining,
+                    )
+                )
+
+                if not chunk:
+                    break
+
+                remaining -= len(chunk)
+
+                yield chunk
+
+    return StreamingResponse(
+        iter_file(),
+        status_code=206,
+        media_type=content_type,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+        },
+    )

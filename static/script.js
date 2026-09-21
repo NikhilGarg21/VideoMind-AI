@@ -760,10 +760,11 @@ function renderTranscript(segments) {
     )
     .join("");
 
-  el.transcriptList.querySelectorAll(".time-badge").forEach((badge) => {
-    badge.addEventListener("click", (e) => {
-      e.stopPropagation();
-      seekTo(badge.dataset.time);
+  el.transcriptList
+  .querySelectorAll("li")
+  .forEach((li) => {
+    li.addEventListener("click", () => {
+      seekTo(li.querySelector(".time-badge").dataset.time);
     });
   });
 

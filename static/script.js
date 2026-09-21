@@ -1,3 +1,4 @@
+
 // ============================================================================
 // VideoMind frontend — optimized vanilla JS.
 // ============================================================================
@@ -113,18 +114,24 @@ function bindEvents() {
   el.checkBtn.addEventListener("click", handleCheck);
 
   el.urlInput.addEventListener("input", () => {
-    if (
-      state.lastValidatedUrl &&
-      el.urlInput.value.trim() !== state.lastValidatedUrl
-    ) {
+    const url = el.urlInput.value.trim();
+
+    if (state.sourceType === "upload" || url !== state.lastValidatedUrl) {
+      clearPreviousResults();
+
+      state.sourceType = "url";
+      state.selectedFile = null;
       state.validated = null;
       state.lastValidatedUrl = null;
+
+      el.fileInput.value = "";
+      el.dropzoneText.textContent =
+        "Drop a video or audio file, or click to browse";
+
       el.previewCard.hidden = true;
     }
 
-    if (state.sourceType !== "upload") {
-      updateAnalyzeState();
-    }
+    updateAnalyzeState();
   });
 
   el.urlInput.addEventListener("keydown", (e) => {
@@ -193,25 +200,43 @@ function bindEvents() {
 }
 
 function clearPreviousResults() {
+  if (state.pollTimer) {
+    clearInterval(state.pollTimer);
+    state.pollTimer = null;
+  }
+
   if (state.ytPlayer && typeof state.ytPlayer.destroy === "function") {
-    state.ytPlayer.destroy();
+    try {
+      state.ytPlayer.destroy();
+    } catch (e) {
+      // Ignore cleanup errors.
+    }
+
     state.ytPlayer = null;
   }
 
   state.ytReady = false;
 
   if (state.mediaEl) {
-    state.mediaEl.pause();
-    state.mediaEl.removeAttribute("src");
-    state.mediaEl.load();
+    try {
+      state.mediaEl.pause();
+      state.mediaEl.removeAttribute("src");
+      state.mediaEl.load();
+    } catch (e) {
+      // Ignore cleanup errors.
+    }
+
     state.mediaEl = null;
   }
 
+  el.videoEmbed.classList.remove("audio-mode");
   el.videoEmbed.innerHTML = "";
+
   el.chaptersList.innerHTML = "";
   el.transcriptList.innerHTML = "";
 
   state.results = null;
+
   el.resultsSection.hidden = true;
 }
 
@@ -280,14 +305,19 @@ async function handleCheck() {
 
 function handleFileSelected(file) {
   clearError();
+
+  // Remove old YouTube player / old uploaded media immediately.
   clearPreviousResults();
 
   state.sourceType = "upload";
   state.selectedFile = file;
   state.validated = null;
   state.lastValidatedUrl = null;
+  state.lastStartedUrl = null;
 
   el.urlInput.value = "";
+
+  el.fileInput.value = "";
   el.dropzoneText.textContent = file.name;
 
   showPreview({
@@ -351,6 +381,7 @@ function clearError() {
 
 async function startJob() {
   el.errorBanner.hidden = true;
+  clearPreviousResults();
   el.analyzeBtn.disabled = true;
   el.analyzeBtn.textContent = "Starting…";
 
@@ -380,8 +411,6 @@ async function startJob() {
       throw new Error(err.detail || "Couldn't start processing");
     }
 
-    clearPreviousResults();
-
     const { job_id } = await res.json();
 
     state.jobId = job_id;
@@ -398,9 +427,7 @@ async function startJob() {
       status: "running",
     });
 
-    el.chatLog
-      .querySelectorAll(".chat-bubble")
-      .forEach((b) => b.remove());
+    el.chatLog.querySelectorAll(".chat-bubble").forEach((b) => b.remove());
 
     el.chatEmpty.hidden = false;
     el.signalChain.hidden = false;
@@ -447,9 +474,7 @@ function pollJob() {
 
 function renderChain(job) {
   state.stageDefs.forEach((stage) => {
-    const moduleEl = el.chainTrack.querySelector(
-      `[data-key="${stage.key}"]`,
-    );
+    const moduleEl = el.chainTrack.querySelector(`[data-key="${stage.key}"]`);
 
     const status = job.stages[stage.key] || "pending";
 
@@ -470,9 +495,7 @@ function renderChain(job) {
     suffix.hidden = status !== "running";
   });
 
-  const active = state.stageDefs.find(
-    (s) => s.key === job.current_stage,
-  );
+  const active = state.stageDefs.find((s) => s.key === job.current_stage);
 
   el.chainSubtext.textContent = active
     ? active.desc
@@ -737,27 +760,23 @@ function renderTranscript(segments) {
     )
     .join("");
 
-  el.transcriptList
-    .querySelectorAll(".time-badge")
-    .forEach((badge) => {
-      badge.addEventListener("click", (e) => {
-        e.stopPropagation();
-        seekTo(badge.dataset.time);
-      });
+  el.transcriptList.querySelectorAll(".time-badge").forEach((badge) => {
+    badge.addEventListener("click", (e) => {
+      e.stopPropagation();
+      seekTo(badge.dataset.time);
     });
+  });
 
   // Clicking transcript text should also seek.
-  el.transcriptList
-    .querySelectorAll("li")
-    .forEach((item) => {
-      item.addEventListener("click", () => {
-        const badge = item.querySelector(".time-badge");
+  el.transcriptList.querySelectorAll("li").forEach((item) => {
+    item.addEventListener("click", () => {
+      const badge = item.querySelector(".time-badge");
 
-        if (badge) {
-          seekTo(badge.dataset.time);
-        }
-      });
+      if (badge) {
+        seekTo(badge.dataset.time);
+      }
     });
+  });
 }
 
 function filterTranscript() {
@@ -772,15 +791,11 @@ function filterTranscript() {
 function switchTab(name) {
   el.tabs
     .querySelectorAll(".tab")
-    .forEach((t) =>
-      t.classList.toggle("active", t.dataset.tab === name),
-    );
+    .forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
 
   document
     .querySelectorAll(".tab-panel")
-    .forEach((p) =>
-      p.classList.toggle("active", p.id === `panel-${name}`),
-    );
+    .forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
 }
 
 async function sendQuestion() {

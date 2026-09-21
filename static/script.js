@@ -239,6 +239,7 @@ function clearPreviousResults() {
   state.results = null;
 
   el.resultsSection.hidden = true;
+  el.signalChain.hidden = true;
 }
 
 async function handleCheck() {

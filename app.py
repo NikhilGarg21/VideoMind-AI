@@ -573,7 +573,6 @@ def ingest_uploaded_file(
     is_video = audio_ingestion.has_video_stream(saved_path)
     audio_chunks_dir = audio_ingestion.create_audio_chunks(saved_path)
 
-    audio_ingestion.cleanup_audio_file(saved_path)
     chunk_durations = audio_ingestion.compute_chunk_durations(
         duration,
         config.chunk_duration,

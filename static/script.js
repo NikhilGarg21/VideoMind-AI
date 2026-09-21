@@ -14,7 +14,6 @@ const state = {
   ytPlayer: null,
   ytReady: false,
   mediaEl: null,
-  pendingSeek: null,
   results: null,
 };
 
@@ -195,29 +194,18 @@ function bindEvents() {
 
 function clearPreviousResults() {
   if (state.ytPlayer && typeof state.ytPlayer.destroy === "function") {
-    try {
-      state.ytPlayer.destroy();
-    } catch (err) {
-      // Ignore destroyed player errors.
-    }
+    state.ytPlayer.destroy();
+    state.ytPlayer = null;
   }
 
-  state.ytPlayer = null;
   state.ytReady = false;
 
   if (state.mediaEl) {
-    try {
-      state.mediaEl.pause();
-      state.mediaEl.removeAttribute("src");
-      state.mediaEl.load();
-    } catch (err) {
-      // Ignore media cleanup errors.
-    }
-
+    state.mediaEl.pause();
+    state.mediaEl.removeAttribute("src");
+    state.mediaEl.load();
     state.mediaEl = null;
   }
-
-  state.pendingSeek = null;
 
   el.videoEmbed.innerHTML = "";
   el.chaptersList.innerHTML = "";
@@ -524,10 +512,8 @@ function showResults(job) {
 }
 
 function setupPlayer(job) {
-  state.ytPlayer = null;
   state.ytReady = false;
   state.mediaEl = null;
-  state.pendingSeek = null;
 
   if (job.video_id) {
     el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
@@ -538,12 +524,9 @@ function setupPlayer(job) {
         playerVars: {
           rel: 0,
         },
-        events: {
-          onReady: () => {
-            state.ytReady = true;
-          },
-        },
       });
+
+      state.ytReady = true;
     });
 
     return;
@@ -556,7 +539,7 @@ function setupPlayer(job) {
           <div class="audio-only-icon">♪</div>
           <audio
             id="localPlayer"
-            src="${escapeAttribute(job.media_url)}"
+            src="${job.media_url}"
             controls
             preload="metadata"
           ></audio>
@@ -566,7 +549,7 @@ function setupPlayer(job) {
       el.videoEmbed.innerHTML = `
         <video
           id="localPlayer"
-          src="${escapeAttribute(job.media_url)}"
+          src="${job.media_url}"
           controls
           preload="metadata"
         ></video>
@@ -575,20 +558,19 @@ function setupPlayer(job) {
 
     state.mediaEl = document.getElementById("localPlayer");
 
-    state.mediaEl.addEventListener("loadedmetadata", () => {
-      if (state.pendingSeek !== null) {
-        const seconds = state.pendingSeek;
-        state.pendingSeek = null;
-        performLocalSeek(seconds);
-      }
-    });
-
     return;
   }
 
   el.videoEmbed.innerHTML = `
     <div
-      style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-tertiary);font-size:13px;"
+      style="
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        height:100%;
+        color:var(--text-tertiary);
+        font-size:13px;
+      "
     >
       No preview available
     </div>
@@ -597,117 +579,80 @@ function setupPlayer(job) {
 
 function loadYouTubeAPI(callback) {
   if (window.YT && window.YT.Player) {
-    callback();
-    return;
+    return callback();
   }
 
-  const previousCallback = window.onYouTubeIframeAPIReady;
+  const tag = document.createElement("script");
 
-  window.onYouTubeIframeAPIReady = () => {
-    if (typeof previousCallback === "function") {
-      previousCallback();
-    }
+  tag.src = "https://www.youtube.com/iframe_api";
 
-    callback();
-  };
+  document.head.appendChild(tag);
 
-  const existingScript = document.querySelector(
-    'script[src="https://www.youtube.com/iframe_api"]',
-  );
-
-  if (!existingScript) {
-    const tag = document.createElement("script");
-
-    tag.src = "https://www.youtube.com/iframe_api";
-
-    document.head.appendChild(tag);
-  }
+  window.onYouTubeIframeAPIReady = callback;
 }
 
 function seekTo(timeLabel) {
   const seconds = parseTimecode(timeLabel);
 
-  if (!Number.isFinite(seconds) || seconds < 0) {
+  if (!Number.isFinite(seconds)) {
     return;
   }
 
-  // --------------------------------------------------------------
+  // Scroll the player into view first.
+  el.videoEmbed.scrollIntoView({
+    behavior: "smooth",
+    block: "center",
+  });
+
   // YouTube
-  // --------------------------------------------------------------
-
-  if (
-    state.ytPlayer &&
-    state.ytReady &&
-    typeof state.ytPlayer.seekTo === "function"
-  ) {
+  if (state.ytPlayer && state.ytReady) {
     state.ytPlayer.seekTo(seconds, true);
-
-    if (typeof state.ytPlayer.playVideo === "function") {
-      state.ytPlayer.playVideo();
-    }
-
+    state.ytPlayer.playVideo();
     return;
   }
 
-  // --------------------------------------------------------------
-  // Local audio/video
-  // --------------------------------------------------------------
-
-  if (!state.mediaEl) {
-    return;
-  }
-
-  if (state.mediaEl.readyState < 1) {
-    state.pendingSeek = seconds;
-    return;
-  }
-
-  performLocalSeek(seconds);
-}
-
-function performLocalSeek(seconds) {
+  // Uploaded video/audio
   const media = state.mediaEl;
 
   if (!media) {
     return;
   }
 
-  const duration = media.duration;
+  const seek = () => {
+    const duration = media.duration;
 
-  let target = seconds;
+    const target = Number.isFinite(duration)
+      ? Math.min(Math.max(seconds, 0), duration)
+      : Math.max(seconds, 0);
 
-  if (Number.isFinite(duration)) {
-    target = Math.min(
-      Math.max(seconds, 0),
-      Math.max(duration - 0.05, 0),
-    );
-  }
+    try {
+      media.currentTime = target;
+    } catch (err) {
+      return;
+    }
 
-  try {
-    media.currentTime = target;
-  } catch (err) {
-    state.pendingSeek = target;
-    return;
-  }
+    const playPromise = media.play();
 
-  const playPromise = media.play();
+    if (playPromise) {
+      playPromise.catch(() => {});
+    }
+  };
 
-  if (playPromise && typeof playPromise.catch === "function") {
-    playPromise.catch(() => {
-      // Browser autoplay policy may prevent playback.
-      // Seeking itself has already happened.
+  if (media.readyState >= HTMLMediaElement.HAVE_METADATA) {
+    seek();
+  } else {
+    media.addEventListener("loadedmetadata", seek, {
+      once: true,
     });
   }
 }
 
 function parseTimecode(label) {
-  if (!label) {
+  if (!label || typeof label !== "string") {
     return NaN;
   }
 
-  const parts = String(label)
-    .split(":")
-    .map(Number);
+  const parts = label.trim().split(":").map(Number);
 
   if (parts.some((part) => !Number.isFinite(part))) {
     return NaN;
@@ -725,8 +670,6 @@ function parseTimecode(label) {
 }
 
 function renderOverview(summary) {
-  summary = summary || {};
-
   el.tldrText.textContent = summary.tldr || "";
 
   el.keyPoints.innerHTML = (summary.key_points || [])
@@ -755,8 +698,8 @@ function renderChapters(topics) {
   el.chaptersList.innerHTML = topics
     .map(
       (t) => `
-      <li data-time="${escapeAttribute(t.start_time)}">
-        <span class="time-badge">${escapeHtml(t.start_time)}</span>
+      <li data-time="${t.start_time}">
+        <span class="time-badge">${t.start_time}</span>
         <span class="chapter-topic">${escapeHtml(t.topic)}</span>
       </li>
     `,
@@ -764,9 +707,7 @@ function renderChapters(topics) {
     .join("");
 
   el.chaptersList.querySelectorAll("li").forEach((li) => {
-    li.addEventListener("click", () => {
-      seekTo(li.dataset.time);
-    });
+    li.addEventListener("click", () => seekTo(li.dataset.time));
   });
 }
 
@@ -774,15 +715,13 @@ function renderTranscript(segments) {
   el.transcriptList.innerHTML = (segments || [])
     .map(
       (s) => `
-      <li data-text="${escapeAttribute(
-        String(s.text || "").toLowerCase(),
-      )}">
+      <li data-text="${escapeHtml(s.text).toLowerCase()}">
         <span
           class="time-badge"
-          data-time="${escapeAttribute(s.start_time)}"
+          data-time="${s.start_time}"
           title="Jump to this moment"
         >
-          ${escapeHtml(s.start_time)}
+          ${s.start_time}
         </span>
         <span class="transcript-text">${escapeHtml(s.text)}</span>
       </li>
@@ -796,6 +735,19 @@ function renderTranscript(segments) {
       badge.addEventListener("click", (e) => {
         e.stopPropagation();
         seekTo(badge.dataset.time);
+      });
+    });
+
+  // Clicking transcript text should also seek.
+  el.transcriptList
+    .querySelectorAll("li")
+    .forEach((item) => {
+      item.addEventListener("click", () => {
+        const badge = item.querySelector(".time-badge");
+
+        if (badge) {
+          seekTo(badge.dataset.time);
+        }
       });
     });
 }
@@ -857,9 +809,7 @@ async function sendQuestion() {
 
     pending.classList.remove("pending");
 
-    pending.innerHTML = `${escapeHtml(data.answer)}${renderSourceChips(
-      data.sources,
-    )}`;
+    pending.innerHTML = `${escapeHtml(data.answer)}${renderSourceChips(data.sources)}`;
 
     bindSourceChips(pending);
   } catch (err) {
@@ -891,11 +841,7 @@ function renderSourceChips(sources) {
   const chips = sources
     .map(
       (s) =>
-        `<span class="source-chip" data-time="${escapeAttribute(
-          s.start_time,
-        )}" title="Jump to this moment">${escapeHtml(
-          s.start_time,
-        )}</span>`,
+        `<span class="source-chip" data-time="${s.start_time}" title="Jump to this moment">${s.start_time}</span>`,
     )
     .join("");
 
@@ -904,9 +850,7 @@ function renderSourceChips(sources) {
 
 function bindSourceChips(container) {
   container.querySelectorAll(".source-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      seekTo(chip.dataset.time);
-    });
+    chip.addEventListener("click", () => seekTo(chip.dataset.time));
   });
 }
 
@@ -935,10 +879,6 @@ function escapeHtml(str) {
   div.textContent = str ?? "";
 
   return div.innerHTML;
-}
-
-function escapeAttribute(str) {
-  return escapeHtml(str);
 }
 
 init();

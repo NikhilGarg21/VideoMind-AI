@@ -7,7 +7,7 @@ Lightweight deployment version:
 - Up to 2 users can process videos concurrently.
 - Each job gets its own artifact directory.
 - Old finished artifacts are cleaned when the same user starts a fresh job.
-- Uploaded source files are deleted after successful audio chunking.
+- Uploaded source files are retained for manual playback and cleaned with the job artifacts.
 - QAPipeline is created lazily on the first completed-job question.
 - Timestamp and summary stages run sequentially to reduce peak memory.
 - yt-dlp validation results are temporarily reused by the real download.
@@ -553,7 +553,8 @@ def ingest_uploaded_file(
     Optimization:
     - No full uploaded-video -> MP3 conversion.
     - FFmpeg chunks directly from the source file.
-    - Original source is deleted after successful chunking.
+    - Original uploaded media is retained for playback.
+    - Temporary audio chunks are deleted after transcription.
     """
     from src.components.audio_ingestion import (
         AudioIngestion,
@@ -597,7 +598,9 @@ def ingest_uploaded_file(
         config.video_metadata_file_path,
     )
 
-    audio_ingestion.cleanup_audio_file(saved_path)
+    # Keep the original uploaded media in artifact/uploads so the frontend
+    # can still play manual video/audio after processing. The temporary
+    # audio chunks are deleted after transcription in run_job().
 
     return (
         AudioIngestionArtifact(
@@ -713,13 +716,40 @@ def run_job(
             "running",
         )
 
-        transcription_artifact = pipeline.start_audio_transcription(ingestion_artifact)
+        try:
+            transcription_artifact = pipeline.start_audio_transcription(
+                ingestion_artifact
+            )
 
-        set_stage(
-            job_id,
-            "transcription",
-            "done",
-        )
+            set_stage(
+                job_id,
+                "transcription",
+                "done",
+            )
+
+        finally:
+            # Audio chunks are temporary resources. Once transcription has
+            # finished (or failed), no later pipeline stage needs them.
+            audio_chunks_dir = getattr(
+                ingestion_artifact,
+                "audio_chunks_dir",
+                None,
+            )
+
+            if audio_chunks_dir and os.path.exists(audio_chunks_dir):
+                try:
+                    shutil.rmtree(
+                        audio_chunks_dir,
+                        ignore_errors=True,
+                    )
+                    logger.info(
+                        f"Deleted audio chunks for job {job_id}: "
+                        f"{audio_chunks_dir}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Could not delete audio chunks for job {job_id}: {e}"
+                    )
 
         ingestion_artifact = None
 

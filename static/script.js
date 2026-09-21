@@ -13,7 +13,7 @@ const state = {
   stageDefs: [],
   ytPlayer: null,
   ytReady: false,
-  mediaEl: null, // <video> element when playing an uploaded file
+  mediaEl: null, // <video> or <audio> element when playing an uploaded file
   results: null,
 };
 
@@ -208,6 +208,8 @@ function clearPreviousResults() {
     state.ytPlayer.destroy();
     state.ytPlayer = null;
   }
+
+  state.ytReady = false;
 
   if (state.mediaEl) {
     state.mediaEl.pause();
@@ -543,6 +545,9 @@ function showResults(job) {
 }
 
 function setupPlayer(job) {
+  state.ytReady = false;
+  state.mediaEl = null;
+
   if (job.video_id) {
     el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
 
@@ -552,40 +557,62 @@ function setupPlayer(job) {
         playerVars: {
           rel: 0,
         },
+        events: {
+          onReady: () => {
+            state.ytReady = true;
+          },
+        },
       });
-
-      state.ytReady = true;
     });
-  } else if (job.media_url) {
+
+    return;
+  }
+
+  if (job.media_url) {
     if (job.is_video === false) {
       el.videoEmbed.innerHTML = `
         <div class="audio-only-player">
           <div class="audio-only-icon">♪</div>
-          <audio id="localPlayer" src="${job.media_url}" controls></audio>
+          <audio
+            id="localPlayer"
+            src="${job.media_url}"
+            controls
+            preload="metadata"
+          ></audio>
         </div>
       `;
     } else {
       el.videoEmbed.innerHTML = `
-        <video id="localPlayer" src="${job.media_url}" controls></video>
+        <video
+          id="localPlayer"
+          src="${job.media_url}"
+          controls
+          preload="metadata"
+        ></video>
       `;
     }
 
     state.mediaEl = document.getElementById("localPlayer");
-  } else {
-    el.videoEmbed.innerHTML = `
-      <div
-        style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-tertiary);font-size:13px;"
-      >
-        No preview available
-      </div>
-    `;
+
+    return;
   }
+
+  el.videoEmbed.innerHTML = `
+    <div
+      style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-tertiary);font-size:13px;"
+    >
+      No preview available
+    </div>
+  `;
 }
 
 function loadYouTubeAPI(callback) {
   if (window.YT && window.YT.Player) {
-    return callback();
+    callback();
+    return;
   }
+
+  const previousCallback = window.onYouTubeIframeAPIReady;
 
   const tag = document.createElement("script");
 
@@ -593,7 +620,13 @@ function loadYouTubeAPI(callback) {
 
   document.head.appendChild(tag);
 
-  window.onYouTubeIframeAPIReady = callback;
+  window.onYouTubeIframeAPIReady = () => {
+    if (typeof previousCallback === "function") {
+      previousCallback();
+    }
+
+    callback();
+  };
 }
 
 function seekTo(timeLabel) {
@@ -604,7 +637,12 @@ function seekTo(timeLabel) {
     state.ytPlayer.playVideo();
   } else if (state.mediaEl) {
     state.mediaEl.currentTime = seconds;
-    state.mediaEl.play();
+
+    const playPromise = state.mediaEl.play();
+
+    if (playPromise && typeof playPromise.catch === "function") {
+      playPromise.catch(() => {});
+    }
   }
 }
 

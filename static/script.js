@@ -515,6 +515,9 @@ function setupPlayer(job) {
   state.ytReady = false;
   state.mediaEl = null;
 
+  // Reset player container classes.
+  el.videoEmbed.classList.remove("audio-mode");
+
   if (job.video_id) {
     el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
 
@@ -534,9 +537,14 @@ function setupPlayer(job) {
 
   if (job.media_url) {
     if (job.is_video === false) {
+      // IMPORTANT:
+      // Tell CSS that this is an audio-only player.
+      el.videoEmbed.classList.add("audio-mode");
+
       el.videoEmbed.innerHTML = `
         <div class="audio-only-player">
           <div class="audio-only-icon">♪</div>
+
           <audio
             id="localPlayer"
             src="${job.media_url}"

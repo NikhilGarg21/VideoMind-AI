@@ -597,11 +597,16 @@ def ingest_uploaded_file(
         config.video_metadata_file_path,
     )
 
-    return AudioIngestionArtifact(
-        audio_file_path=saved_path,
-        audio_chunks_dir=audio_chunks_dir,
-        video_metadata_file_path=(video_metadata_file_path),
-        chunk_durations=chunk_durations,
+    audio_ingestion.cleanup_audio_file(saved_path)
+
+    return (
+        AudioIngestionArtifact(
+            audio_file_path=saved_path,
+            audio_chunks_dir=audio_chunks_dir,
+            video_metadata_file_path=(video_metadata_file_path),
+            chunk_durations=chunk_durations,
+        ),
+        is_video,
     )
 
 
@@ -675,7 +680,7 @@ def run_job(
                 JOBS[job_id]["video_id"] = video_meta.get("id")
 
         else:
-            ingestion_artifact = ingest_uploaded_file(
+            ingestion_artifact, is_video = ingest_uploaded_file(
                 job_id=job_id,
                 saved_path=source_value,
                 original_filename=original_filename,

@@ -1,4 +1,3 @@
-
 // ============================================================================
 // VideoMind frontend — optimized vanilla JS.
 // ============================================================================
@@ -16,6 +15,7 @@ const state = {
   ytReady: false,
   mediaEl: null,
   results: null,
+  processing: false,
 };
 
 const el = {
@@ -74,6 +74,7 @@ async function init() {
 
 function buildWaveform() {
   const svg = document.getElementById("waveformSvg");
+  if (!svg) return;
   const bars = 28;
   let html = "";
 
@@ -245,21 +246,23 @@ async function handleCheck() {
 
   if (!url) return;
 
-  if (url === state.lastValidatedUrl && state.validated) {
-    if (url !== state.lastStartedUrl) {
-      startJob();
-    }
+  if (state.processing) {
     return;
   }
 
-  clearError();
+  clearPreviousResults();
 
   state.sourceType = "url";
   state.selectedFile = null;
+  state.validated = null;
 
   el.fileInput.value = "";
   el.dropzoneText.textContent =
     "Drop a video or audio file, or click to browse";
+
+  el.analyzeBtn.disabled = true;
+
+  clearError();
 
   el.checkBtn.disabled = true;
   el.checkBtn.textContent = "Checking…";
@@ -299,14 +302,16 @@ async function handleCheck() {
   } finally {
     el.checkBtn.disabled = false;
     el.checkBtn.textContent = "Check";
-    updateAnalyzeState();
+
+    if (!state.processing) {
+      updateAnalyzeState();
+    }
   }
 }
 
 function handleFileSelected(file) {
   clearError();
 
-  // Remove old YouTube player / old uploaded media immediately.
   clearPreviousResults();
 
   state.sourceType = "upload";
@@ -380,6 +385,12 @@ function clearError() {
 }
 
 async function startJob() {
+  if (state.processing) {
+    return;
+  }
+
+  state.processing = true;
+
   el.errorBanner.hidden = true;
   clearPreviousResults();
   el.analyzeBtn.disabled = true;
@@ -439,6 +450,7 @@ async function startJob() {
 
     pollJob();
   } catch (err) {
+    state.processing = false;
     showFormError(err.message);
     el.analyzeBtn.disabled = false;
     el.analyzeBtn.textContent = "Analyze";
@@ -457,11 +469,13 @@ function pollJob() {
 
       if (job.status === "completed") {
         clearInterval(state.pollTimer);
+        state.processing = false;
         setStatusChip("completed", "Ready");
         setFormBusy(false);
         showResults(job);
       } else if (job.status === "failed") {
         clearInterval(state.pollTimer);
+        state.processing = false;
         setStatusChip("failed", "Failed");
         setFormBusy(false);
         showError(job.error || "Processing failed.");
@@ -534,11 +548,14 @@ function showResults(job) {
   el.chatEmpty.hidden = false;
 }
 
+/* ==========================================================================
+   Player Setup & Audio Controls Logic
+   ========================================================================== */
+
 function setupPlayer(job) {
   state.ytReady = false;
   state.mediaEl = null;
 
-  // Reset player container classes.
   el.videoEmbed.classList.remove("audio-mode");
 
   if (job.video_id) {
@@ -560,22 +577,50 @@ function setupPlayer(job) {
 
   if (job.media_url) {
     if (job.is_video === false) {
-      // IMPORTANT:
-      // Tell CSS that this is an audio-only player.
       el.videoEmbed.classList.add("audio-mode");
+
+      const title = job.results?.metadata?.title || "Audio Track";
 
       el.videoEmbed.innerHTML = `
         <div class="audio-only-player">
-          <div class="audio-only-icon">♪</div>
+          <audio id="localPlayer" src="${job.media_url}" preload="metadata"></audio>
+          
+          <button type="button" class="audio-play-btn" id="audioPlayBtn" aria-label="Play audio">
+            <svg class="icon-play" viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+              <path d="M8 5v14l11-7z"/>
+            </svg>
+            <svg class="icon-pause" viewBox="0 0 24 24" width="18" height="18" fill="currentColor" style="display:none;">
+              <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/>
+            </svg>
+          </button>
 
-          <audio
-            id="localPlayer"
-            src="${job.media_url}"
-            controls
-            preload="metadata"
-          ></audio>
+          <div class="audio-main">
+            <div class="audio-meta-row">
+              <span class="audio-title">${escapeHtml(title)}</span>
+              <span class="audio-time" id="audioTimeDisplay">0:00 / 0:00</span>
+            </div>
+
+            <div class="audio-waveform" id="audioWaveformContainer">
+              ${Array.from({ length: 20 })
+                .map(() => `<div class="waveform-bar"></div>`)
+                .join("")}
+              <input type="range" class="audio-seek-slider" id="audioSeekSlider" min="0" max="100" value="0" step="0.1" />
+            </div>
+          </div>
+
+          <div class="audio-controls">
+            <button type="button" class="audio-action-btn" id="audioSpeedBtn" title="Speed">1x</button>
+            <button type="button" class="audio-action-btn" id="audioMuteBtn" title="Mute/Unmute">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02z"/>
+              </svg>
+            </button>
+          </div>
         </div>
       `;
+
+      state.mediaEl = document.getElementById("localPlayer");
+      bindCustomAudioEvents();
     } else {
       el.videoEmbed.innerHTML = `
         <video
@@ -585,9 +630,8 @@ function setupPlayer(job) {
           preload="metadata"
         ></video>
       `;
+      state.mediaEl = document.getElementById("localPlayer");
     }
-
-    state.mediaEl = document.getElementById("localPlayer");
 
     return;
   }
@@ -606,6 +650,87 @@ function setupPlayer(job) {
       No preview available
     </div>
   `;
+}
+
+function bindCustomAudioEvents() {
+  const audio = state.mediaEl;
+  if (!audio) return;
+
+  const playBtn = document.getElementById("audioPlayBtn");
+  const playIcon = playBtn.querySelector(".icon-play");
+  const pauseIcon = playBtn.querySelector(".icon-pause");
+
+  const timeDisplay = document.getElementById("audioTimeDisplay");
+  const seekSlider = document.getElementById("audioSeekSlider");
+  const waveformBars = document.querySelectorAll(".waveform-bar");
+  const speedBtn = document.getElementById("audioSpeedBtn");
+  const muteBtn = document.getElementById("audioMuteBtn");
+
+  const speeds = [1, 1.25, 1.5, 2];
+  let speedIdx = 0;
+
+  waveformBars.forEach((bar) => {
+    const h = Math.floor(Math.random() * 65) + 25;
+    bar.style.height = `${h}%`;
+  });
+
+  playBtn.addEventListener("click", () => {
+    if (audio.paused) {
+      audio.play();
+    } else {
+      audio.pause();
+    }
+  });
+
+  audio.addEventListener("play", () => {
+    playIcon.style.display = "none";
+    pauseIcon.style.display = "block";
+  });
+
+  audio.addEventListener("pause", () => {
+    playIcon.style.display = "block";
+    pauseIcon.style.display = "none";
+  });
+
+  audio.addEventListener("timeupdate", () => {
+    if (!audio.duration) return;
+
+    const current = audio.currentTime;
+    const total = audio.duration;
+    const percent = (current / total) * 100;
+
+    seekSlider.value = percent;
+    timeDisplay.textContent = `${formatDuration(current)} / ${formatDuration(total)}`;
+
+    const barCount = waveformBars.length;
+    const activeThreshold = Math.floor((percent / 100) * barCount);
+
+    waveformBars.forEach((bar, index) => {
+      bar.classList.toggle("active", index <= activeThreshold);
+    });
+  });
+
+  audio.addEventListener("loadedmetadata", () => {
+    timeDisplay.textContent = `0:00 / ${formatDuration(audio.duration)}`;
+  });
+
+  seekSlider.addEventListener("input", () => {
+    if (!audio.duration) return;
+    const seekTime = (seekSlider.value / 100) * audio.duration;
+    audio.currentTime = seekTime;
+  });
+
+  speedBtn.addEventListener("click", () => {
+    speedIdx = (speedIdx + 1) % speeds.length;
+    const newSpeed = speeds[speedIdx];
+    audio.playbackRate = newSpeed;
+    speedBtn.textContent = `${newSpeed}x`;
+  });
+
+  muteBtn.addEventListener("click", () => {
+    audio.muted = !audio.muted;
+    muteBtn.style.opacity = audio.muted ? "0.4" : "1";
+  });
 }
 
 function loadYouTubeAPI(callback) {
@@ -629,20 +754,17 @@ function seekTo(timeLabel) {
     return;
   }
 
-  // Scroll the player into view first.
   el.videoEmbed.scrollIntoView({
     behavior: "smooth",
     block: "center",
   });
 
-  // YouTube
   if (state.ytPlayer && state.ytReady) {
     state.ytPlayer.seekTo(seconds, true);
     state.ytPlayer.playVideo();
     return;
   }
 
-  // Uploaded video/audio
   const media = state.mediaEl;
 
   if (!media) {
@@ -760,15 +882,6 @@ function renderTranscript(segments) {
     )
     .join("");
 
-  el.transcriptList
-  .querySelectorAll("li")
-  .forEach((li) => {
-    li.addEventListener("click", () => {
-      seekTo(li.querySelector(".time-badge").dataset.time);
-    });
-  });
-
-  // Clicking transcript text should also seek.
   el.transcriptList.querySelectorAll("li").forEach((item) => {
     item.addEventListener("click", () => {
       const badge = item.querySelector(".time-badge");

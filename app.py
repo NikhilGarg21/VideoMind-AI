@@ -159,7 +159,13 @@ JOBS_LOCK = threading.Lock()
 # --------------------------------------------------------------------------
 # Client helpers
 # --------------------------------------------------------------------------
-
+def humanize_error(e: Exception) -> str:
+    """
+    Return a short, generic message safe to show in the UI.
+    Full exception detail is always available server-side via
+    logger.exception at the point this is called.
+    """
+    return "This video couldn't be processed. Please try again or use a different link."
 
 def get_or_create_client_id(
     request: Request,
@@ -407,6 +413,7 @@ def create_job_locked(
         "error": None,
         "warning": None,
         "video_id": None,
+        "is_video": None,
         "media_url": None,
         "artifact_root": None,
         "embedding_artifact": None,
@@ -561,15 +568,12 @@ def ingest_uploaded_file(
     )
 
     config = pipeline.audio_ingestion_config
-
     audio_ingestion = AudioIngestion(audio_ingestion_config=config)
-
     duration = audio_ingestion.get_media_duration(saved_path)
-
+    is_video = audio_ingestion.has_video_stream(saved_path)
     audio_chunks_dir = audio_ingestion.create_audio_chunks(saved_path)
 
     audio_ingestion.cleanup_audio_file(saved_path)
-
     chunk_durations = audio_ingestion.compute_chunk_durations(
         duration,
         config.chunk_duration,
@@ -685,6 +689,7 @@ def run_job(
                 JOBS[job_id]["media_url"] = (
                     f"/media/{job_id}/" f"{os.path.basename(source_value)}"
                 )
+                JOBS[job_id]["is_video"] = is_video
 
         set_stage(
             job_id,
@@ -928,11 +933,8 @@ def run_job(
         with JOBS_LOCK:
             if job_id in JOBS:
                 job = JOBS[job_id]
-
                 job["status"] = "failed"
-
-                job["error"] = str(e)
-
+                job["error"] = humanize_error(e)
                 current = job.get("current_stage")
 
                 if current and job["stages"].get(current) == "running":
@@ -1085,7 +1087,7 @@ def validate_url(
             status_code=400,
             content={
                 "valid": False,
-                "error": str(e),
+                "error": "We couldn't read this link. Check the URL and try again.",
             },
         )
 

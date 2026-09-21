@@ -912,6 +912,16 @@ main {
   text-decoration: underline;
 }
 
+.transcript-list .transcript-text {
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.transcript-list .transcript-text:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+
 .time-badge {
   font-family: var(--font-mono);
   font-size: 12px;

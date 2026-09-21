@@ -36,7 +36,7 @@
   --text-tertiary: #64748b;
 
   --status-idle: #64748b;
-  --status-active: #10b981;
+  --status-active: #4e73f8;
   --status-error: #ef4444;
 
   --font-heading: "Space Grotesk", -apple-system, BlinkMacSystemFont, sans-serif;
@@ -136,10 +136,10 @@ main {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 24px 24px;
+  padding: 16px 24px;
   max-width: 1120px;
   width: 100%;
-  margin: 0 auto 32px;
+  margin: 0 auto 8px;
 }
 
 .wordmark {
@@ -205,7 +205,7 @@ main {
 }
 
 .status-chip[data-state="completed"] {
-  border-color: rgba(16, 185, 129, 0.3);
+  border-color: rgba(78, 115, 248, 0.3);
 }
 
 .status-chip[data-state="error"],
@@ -231,24 +231,25 @@ main {
   grid-template-columns: 1.2fr 0.8fr;
   gap: 48px;
   align-items: center;
-  padding: 32px 0 64px;
+  padding: 0 0 32px;
+  min-height: calc(100vh - 100px);
+  min-height: calc(100svh - 100px);
 }
 
 .hero-copy h1 {
   font-family: var(--font-heading);
-  font-size: 48px;
+  font-size: clamp(30px, 5.4vh, 48px);
   line-height: 1.1;
   font-weight: 700;
   letter-spacing: -0.03em;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .hero-sub {
   font-size: 16px;
   color: var(--text-secondary);
   line-height: 1.6;
-  margin-bottom: 32px;
-  max-width: 60ch;
+  margin-bottom: 20px;
 }
 
 .hero-visual {
@@ -291,7 +292,7 @@ main {
   animation: wave 1.6s ease-in-out infinite alternate;
 }
 
-/* Vary color + speed so the wave feels organic, not mechanical */
+/* Vary blue shades + speed so the wave feels organic, not mechanical */
 .wf-bar:nth-child(3n) {
   fill: var(--accent-soft);
   animation-duration: 1.9s;
@@ -303,7 +304,7 @@ main {
 }
 
 .wf-bar:nth-child(7n) {
-  fill: var(--status-active);
+  fill: #7893ff;
   opacity: 0.7;
   animation-duration: 2.2s;
 }
@@ -315,9 +316,9 @@ main {
 .console {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
   background: var(--bg-card);
-  padding: 24px;
+  padding: 20px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-color);
 }
@@ -398,7 +399,7 @@ main {
 .dropzone {
   border: 2px dashed var(--border-color);
   border-radius: var(--radius-md);
-  padding: 24px;
+  padding: 16px;
   text-align: center;
   cursor: pointer;
   color: var(--text-secondary);
@@ -460,7 +461,7 @@ main {
   background: var(--accent-color);
   color: #fff;
   border: none;
-  padding: 14px;
+  padding: 12px;
   border-radius: var(--radius-md);
   font-family: var(--font-heading);
   font-size: 16px;
@@ -527,7 +528,16 @@ main {
   font-size: 13px;
   transition:
     background-color var(--transition-fast),
-    border-color var(--transition-fast);
+    border-color var(--transition-fast),
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.chain-module:hover {
+  background: rgba(78, 115, 248, 0.06);
+  border-color: rgba(78, 115, 248, 0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.16);
 }
 
 .chain-module-head {
@@ -601,6 +611,7 @@ main {
 .chain-module[data-status="running"] {
   border-color: var(--accent-color);
   background: var(--accent-light);
+  box-shadow: 0 0 0 1px rgba(78, 115, 248, 0.08);
 }
 
 .chain-module[data-status="running"] .chain-meter-fill {
@@ -628,20 +639,33 @@ main {
   color: var(--text-secondary);
 }
 
-/* done */
+/* done — blue, so the processing flow remains one consistent color family */
 .chain-module[data-status="done"] {
-  border-color: var(--status-active);
+  border-color: rgba(78, 115, 248, 0.72);
+  background: rgba(78, 115, 248, 0.055);
+}
+
+.chain-module[data-status="done"]:hover {
+  border-color: rgba(78, 115, 248, 0.9);
+  background: rgba(78, 115, 248, 0.09);
 }
 
 .chain-module[data-status="done"] .chain-meter-fill {
   width: 100%;
-  background: var(--status-active);
+  background: var(--accent-color);
 }
 
-.chain-module[data-status="done"] .chain-module-num,
+.chain-module[data-status="done"] .chain-module-num {
+  color: var(--accent-soft);
+}
+
 .chain-module[data-status="done"] .chain-module-label,
 .chain-module[data-status="done"] .chain-status-icon {
-  color: var(--status-active);
+  color: var(--accent-color);
+}
+
+.chain-module[data-status="done"] .chain-module-desc {
+  color: var(--text-secondary);
 }
 
 /* error */
@@ -726,28 +750,6 @@ main {
   inset: 0;
 }
 
-.video-meta h3 {
-  font-family: var(--font-heading);
-  font-size: 20px;
-  margin-bottom: 4px;
-  overflow-wrap: anywhere;
-}
-
-.video-meta p {
-  color: var(--text-tertiary);
-  font-size: 14px;
-}
-
-.results-body {
-  min-width: 0;
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  padding: 24px;
-  display: flex;
-  flex-direction: column;
-}
-
 /* ============================================================================
    9. CUSTOM AUDIO PLAYER
    ============================================================================ */
@@ -789,11 +791,13 @@ main {
   box-shadow: 0 0 0 4px var(--accent-light);
   transition:
     background-color var(--transition-fast),
-    transform var(--transition-fast);
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .audio-play-btn:hover {
   background: var(--accent-hover);
+  box-shadow: 0 0 0 5px rgba(78, 115, 248, 0.16);
 }
 
 .audio-play-btn:active {
@@ -817,7 +821,7 @@ main {
 }
 
 .audio-title {
-  font-weight: 500;
+  font-weight: 600;
   color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -826,7 +830,7 @@ main {
 }
 
 .audio-time {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   font-family: var(--font-mono);
@@ -845,9 +849,11 @@ main {
 .waveform-bar {
   flex: 1;
   height: 12px;
-  background: var(--border-color);
+  background: #252d39;
   border-radius: 2px;
-  transition: background-color var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    opacity var(--transition-fast);
 }
 
 /* fallback heights (JS sets random % heights inline) */
@@ -860,7 +866,7 @@ main {
 }
 
 .waveform-bar.active {
-  background: var(--accent-color);
+  background: rgba(78, 115, 248, 0.82);
 }
 
 .audio-seek-slider {
@@ -881,9 +887,9 @@ main {
 }
 
 .audio-action-btn {
-  background: transparent;
-  border: 1px solid var(--border-color);
-  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid #2b3440;
+  color: #718096;
   padding: 6px 10px;
   border-radius: var(--radius-sm);
   font-size: 12px;
@@ -891,11 +897,15 @@ main {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .audio-action-btn:hover {
-  background: var(--bg-hover);
+  background: rgba(78, 115, 248, 0.08);
+  border-color: rgba(78, 115, 248, 0.42);
   color: var(--text-primary);
 }
 
@@ -1000,7 +1010,9 @@ main {
   gap: 12px;
   padding: 10px 8px;
   border-radius: var(--radius-sm);
-  transition: background-color var(--transition-fast);
+  transition:
+    background-color var(--transition-fast),
+    border-color var(--transition-fast);
 }
 
 .chapters-list li {
@@ -1051,12 +1063,17 @@ main {
   color: var(--text-secondary);
   line-height: 1.5;
   cursor: pointer;
-  transition: color var(--transition-fast);
+  transition:
+    color var(--transition-fast),
+    text-decoration-color var(--transition-fast);
 }
 
 .transcript-list li:hover .transcript-text,
 .transcript-text:hover {
   color: var(--text-primary);
+  text-decoration: underline;
+  text-decoration-color: var(--accent-color);
+  text-underline-offset: 3px;
 }
 
 /* ============================================================================
@@ -1373,17 +1390,85 @@ main {
 }
 
 /* ============================================================================
+   18b. FIT-TO-SCREEN (laptops / short windows)
+   ============================================================================ */
+
+/* once a file/link is chosen, the preview card already shows its name,
+   so make the dropzone slimmer */
+.console:has(.preview-card:not([hidden])) .dropzone {
+  padding: 10px 16px;
+}
+
+@media (min-width: 901px) and (max-height: 900px) {
+  .topbar {
+    padding-top: 10px;
+    padding-bottom: 10px;
+  }
+
+  .hero {
+    min-height: calc(100vh - 70px);
+    min-height: calc(100svh - 70px);
+    padding-bottom: 16px;
+  }
+
+  .hero-sub {
+    font-size: 14px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+  }
+
+  .console {
+    gap: 10px;
+    padding: 16px;
+  }
+
+  .input-slot input[type="url"] {
+    padding: 10px 14px;
+  }
+
+  .check-btn {
+    padding: 0 16px;
+  }
+
+  .dropzone {
+    padding: 12px;
+  }
+
+  .preview-card {
+    padding: 8px 12px;
+  }
+
+  .preview-card img,
+  .preview-thumb {
+    width: 64px;
+    height: 48px;
+  }
+
+  .analyze-btn {
+    padding: 11px;
+  }
+}
+
+/* ============================================================================
    19. RESPONSIVE — TABLET
    ============================================================================ */
 
 @media (max-width: 900px) {
   .hero {
     grid-template-columns: 1fr;
-    gap: 32px;
+    gap: 24px;
   }
 
+  /* Keep the waveform visible.
+     Move it above the input area instead of removing it. */
   .hero-visual {
-    display: none;
+    order: -1;
+    margin-top: -8px;
+    margin-bottom: 0;
+  }
+
+  .waveform-svg {
+    max-height: 190px;
   }
 
   .results {
@@ -1407,8 +1492,18 @@ main {
   }
 
   .hero {
-    padding-top: 20px;
+    padding-top: 10px;
     padding-bottom: 40px;
+    gap: 18px;
+  }
+
+  .hero-visual {
+    margin-top: -16px;
+    margin-bottom: -4px;
+  }
+
+  .waveform-svg {
+    max-height: 150px;
   }
 
   .video-embed.audio-mode {
@@ -1448,6 +1543,14 @@ main {
 
   .hero-copy h1 {
     font-size: 32px;
+  }
+
+  .hero-visual {
+    margin-top: -18px;
+  }
+
+  .waveform-svg {
+    max-height: 130px;
   }
 
   .console {
@@ -1509,6 +1612,19 @@ main {
   .status-chip {
     font-size: 12px;
     padding: 5px 9px;
+  }
+
+  .hero {
+    gap: 12px;
+  }
+
+  .hero-visual {
+    margin-top: -22px;
+    margin-bottom: -6px;
+  }
+
+  .waveform-svg {
+    max-height: 110px;
   }
 
   .video-embed.audio-mode {

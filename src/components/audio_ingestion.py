@@ -435,6 +435,39 @@ class AudioIngestion:
                 sys,
             ) from e
 
+    def has_video_stream(
+        self,
+        media_path: str,
+    ) -> bool:
+        """
+        Check whether the uploaded media contains a video stream.
+        """
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "v:0",
+                    "-show_entries",
+                    "stream=codec_type",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    media_path,
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            return result.returncode == 0 and "video" in result.stdout.lower()
+
+        except Exception as e:
+            raise MyException(
+                e,
+                sys,
+            ) from e
     # ----------------------------------------------------------------------
     # Chunking
     # ----------------------------------------------------------------------

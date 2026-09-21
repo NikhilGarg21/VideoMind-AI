@@ -558,28 +558,40 @@ function setupPlayer(job) {
 
   el.videoEmbed.classList.remove("audio-mode");
 
+  // 1. YouTube Video
   if (job.video_id) {
     el.videoEmbed.innerHTML = `<div id="ytPlayer"></div>`;
 
     loadYouTubeAPI(() => {
       state.ytPlayer = new YT.Player("ytPlayer", {
         videoId: job.video_id,
-        playerVars: {
-          rel: 0,
-        },
+        playerVars: { rel: 0 },
       });
-
       state.ytReady = true;
     });
-
     return;
   }
 
+  // 2. Local / Uploaded Media
   if (job.media_url) {
-    if (job.is_video === false) {
+    const urlOrFilename = (
+      job.media_url ||
+      job.results?.metadata?.title ||
+      ""
+    ).toLowerCase();
+
+    // Check file extension for audio formats
+    const isAudio =
+      /\.(mp3|wav|m4a|aac|ogg|flac|wma|opus)($|\?)/i.test(urlOrFilename) ||
+      (state.selectedFile && state.selectedFile.type.startsWith("audio/"));
+
+    if (isAudio) {
       el.videoEmbed.classList.add("audio-mode");
 
-      const title = job.results?.metadata?.title || "Audio Track";
+      const title =
+        job.results?.metadata?.title ||
+        state.selectedFile?.name ||
+        "Audio Track";
 
       el.videoEmbed.innerHTML = `
         <div class="audio-only-player">
@@ -622,6 +634,7 @@ function setupPlayer(job) {
       state.mediaEl = document.getElementById("localPlayer");
       bindCustomAudioEvents();
     } else {
+      // Default to HTML5 video element for videos
       el.videoEmbed.innerHTML = `
         <video
           id="localPlayer"
